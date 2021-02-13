@@ -1,10 +1,10 @@
 /* threads.c
  *
  * Group Members Names and NetIDs:
- *   1.
- *   2.
+ *   1. Michael Nelli (mrn73)
+ *   2. Christopher Naporlee (cmn134)
  *
- * ILab Machine Tested on:
+ * ILab Machine Tested on: snow
  *
  */
 
@@ -26,21 +26,18 @@ int loop = 10;
  *
  */
 void *inc_shared_counter(void *arg) {
+    	int i;
 
-    int i;
+    	printf("Thread Running\n");
 
-    printf("Thread Running\n");
+	pthread_mutex_lock(&mutex);
+    	for (i = 0; i < loop; i++) {
+        	x = x + 1;
+		printf("x is incremented to %d\n", x);
+    	}
+	pthread_mutex_unlock(&mutex);
 
-    for(i = 0; i < loop; i++){
-
-        /* Part 2: Modify the code within this for loop to
-                   allow for synchonized incrementing of x
-                   between the two threads */
-        x = x + 1;
-
-    }
-
-    return NULL;
+    	return NULL;
 }
 
 
@@ -51,22 +48,38 @@ void *inc_shared_counter(void *arg) {
  * run the inc_shared_counter function().
  */
 int main(int argc, char *argv[]) {
+	if (argc != 2) {
+		printf("Bad Usage: Must pass in a integer\n");
+		exit(1);
+    	}
 
-    if(argc != 2){
-        printf("Bad Usage: Must pass in a integer\n");
-        exit(1);
-    }
+    	loop = atoi(argv[1]) / 2;
 
-    loop = atoi(argv[1]) / 2;
+    	printf("Going to run two threads to increment x up to %d\n", loop);
 
-    printf("Going to run two threads to increment x up to %d\n", loop);
+    	// Part 1: create two threads and have them
+    	// run the inc_shared_counter function()
+    	/* Implement Code Here */
+	if (pthread_mutex_init(&mutex, NULL) != 0) {
+		printf("Mutex initialization failed.\n");
+	   	exit(1);
+    	}
 
-    // Part 1: create two threads and have them
-    // run the inc_shared_counter function()
-    /* Implement Code Here */
+	
+    	if (pthread_create(&t1, NULL, inc_shared_counter, NULL) != 0) {
+		printf("Failed to create thread.\n");
+		exit(1);
+	}
+	
+    	if (pthread_create(&t2, NULL, inc_shared_counter, NULL) != 0) {
+		printf("Failed to create thread.\n");
+		exit(1);
+	}
 
+    	pthread_join(t1, NULL);
+    	pthread_join(t2, NULL);
 
-    printf("The final value of x is %d\n", x);
+    	printf("The final value of x is %d\n", x);
 
-    return 0;
+    	return 0;
 }
