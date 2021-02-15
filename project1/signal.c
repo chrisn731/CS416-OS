@@ -18,7 +18,7 @@
  */
 void segment_fault_handler(int signum)
 {
-	int *ptr = &signum;
+	char *ptr = (char *) &signum;
 
 	printf("I am slain!\n");
 	/*
@@ -26,13 +26,12 @@ void segment_fault_handler(int signum)
 	 * then from where the base pointer is to where the
 	 * return address is located, there in lies 0xB8 bytes.
 	 * So 0x14 + 0xB8 = 0xCC.
-	 * 0xCC / sizeof(int) = 0x33.
-	 * Add 0x33 to the ptr so it is now pointing to the return address
+	 * Add our offest to the ptr so it is now pointing to the return address
 	 * of where we segfaulted.
 	 * Now add 2 to that address so we skip over the bad instruction.
 	 * 	- mov (%rax), %eax segfaults us and is 2 bytes.
 	 */
-	ptr += 0xCC / sizeof(*ptr);
+	ptr += 0xCC;
 	*ptr += 2;
 }
 

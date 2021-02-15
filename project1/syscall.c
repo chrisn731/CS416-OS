@@ -24,10 +24,7 @@ int main(int argc, char *argv[]) {
 		gettimeofday(&end, NULL);
 		avg_time += (double)(end.tv_usec - start.tv_usec) + (double)(end.tv_sec - start.tv_sec) * 1e6;
 	}
-
 	avg_time /= 3000;
-
 	printf("Average time per system call is %f microseconds\n", avg_time);
-
 	return 0;
 }
