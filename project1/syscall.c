@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <sys/syscall.h>
+#include <unistd.h>
 
 double avg_time = 0;
 

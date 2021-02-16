@@ -51,7 +51,6 @@ int main(int argc, char *argv[]) {
 	}
 
 	loop = atoi(argv[1]) / 2;
-	printf("Going to run two threads to increment x up to %d\n", loop);
 
 	// Part 1: create two threads and have them
 	// run the inc_shared_counter function()
