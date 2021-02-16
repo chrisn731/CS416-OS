@@ -12,7 +12,7 @@
 
 /* create a new thread */
 int rpthread_create(rpthread_t * thread, pthread_attr_t * attr,
-	      void *(*function)(void*), void * arg)
+		void *(*function)(void*), void * arg)
 {
 	// create Thread Control Block
 	// create and initialize the context of this thread

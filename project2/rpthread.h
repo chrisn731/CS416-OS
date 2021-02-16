@@ -59,8 +59,8 @@ typedef struct rpthread_mutex_t {
 /* Function Declarations: */
 
 /* create a new thread */
-int rpthread_create(rpthread_t * thread, pthread_attr_t * attr, void
-    *(*function)(void*), void * arg);
+int rpthread_create(rpthread_t * thread, pthread_attr_t * attr,
+		void *(*function)(void*), void * arg);
 
 /* give CPU pocession to other user level threads voluntarily */
 int rpthread_yield();
