@@ -15,9 +15,9 @@ rpthread.a: rpthread.o
 rpthread.o: rpthread.h
 
 ifeq ($(SCHED), RR)
-	$(CC) -pthread $(CFLAGS) rpthread.c -DTIMESLICE $(TSLICE)
+	$(CC) -pthread $(CFLAGS) rpthread.c -DTIMESLICE=$(TSLICE)
 else ifeq ($(SCHED), MLFQ)
-	$(CC) -pthread $(CFLAGS) rpthread.c -DMLFQ -DTIMESLICE $(TSLICE)
+	$(CC) -pthread $(CFLAGS) rpthread.c -DMLFQ -DTIMESLICE=$(TSLICE)
 else
 	echo "no such scheduling algorithm"
 endif
