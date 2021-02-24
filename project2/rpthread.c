@@ -19,7 +19,7 @@ static void startup_thread(void *(*func)(void *), void *arg)
 	void *rval;
 
 	rval = func(arg);
-	pthread_exit(rval);
+	rpthread_exit(rval);
 }
 
 /* create a new thread */
