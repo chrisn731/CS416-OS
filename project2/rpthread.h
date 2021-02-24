@@ -23,11 +23,16 @@
 #define BLOCKED 2
 
 /* include lib header files that you need here: */
+#include <err.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <ucontext.h>
 
 typedef uint rpthread_t;
 
@@ -39,21 +44,35 @@ typedef struct threadControlBlock {
 	// thread stack
 	// thread priority
 	// And more ...
-
-	// YOUR CODE HERE
+	void *rval;
+	ucontext_t context;
+	rpthread_t id;
+	unsigned int status;
 } tcb;
+
+struct tcb_list {
+	tcb *thread;
+	struct tcb_list *next;
+};
 
 /* mutex struct definition */
 typedef struct rpthread_mutex_t {
-	/* add something here */
-
-	// YOUR CODE HERE
+	int id;
+	int status;
+	struct tcb_list *wait_list;
 } rpthread_mutex_t;
 
 /* define your data structures here: */
 // Feel free to add your own auxiliary data structures (linked list or queue etc...)
 
 // YOUR CODE HERE
+struct scheduler {
+	tcb *running;
+	struct tcb_list *q_head;
+	struct tcb_list *q_tail;
+	ucontext_t context;
+	unsigned int num_qs;
+};
 
 
 /* Function Declarations: */
@@ -63,7 +82,7 @@ int rpthread_create(rpthread_t * thread, pthread_attr_t * attr,
 		void *(*function)(void*), void * arg);
 
 /* give CPU pocession to other user level threads voluntarily */
-int rpthread_yield();
+int rpthread_yield(void);
 
 /* terminate a thread */
 void rpthread_exit(void *value_ptr);
@@ -95,4 +114,4 @@ int rpthread_mutex_destroy(rpthread_mutex_t *mutex);
 #define pthread_mutex_destroy rpthread_mutex_destroy
 #endif
 
-#endif
+#endif /* RTHREAD_T_H */
