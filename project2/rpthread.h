@@ -36,6 +36,9 @@
 
 typedef uint rpthread_t;
 
+struct tcb_list;
+
+
 typedef struct threadControlBlock {
 	/* add important states in a thread control block */
 	// thread Id
@@ -44,6 +47,7 @@ typedef struct threadControlBlock {
 	// thread stack
 	// thread priority
 	// And more ...
+	struct tcb_list *join_list;
 	void *rval;
 	ucontext_t context;
 	rpthread_t id;
@@ -57,9 +61,9 @@ struct tcb_list {
 
 /* mutex struct definition */
 typedef struct rpthread_mutex_t {
-	int id;
-	int status;
+	tcb *owner;
 	struct tcb_list *wait_list;
+	unsigned int id;
 } rpthread_mutex_t;
 
 /* define your data structures here: */

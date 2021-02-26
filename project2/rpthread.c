@@ -6,6 +6,7 @@
 
 #include "rpthread.h"
 
+#define STOPPED 4
 static struct scheduler *scheduler;
 static volatile uint open_tid, open_mutid;
 
@@ -16,15 +17,12 @@ static void enqueue_job(tcb *);
 
 static void startup_thread(void *(*func)(void *), void *arg)
 {
-	void *rval;
-
-	rval = func(arg);
-	rpthread_exit(rval);
+	rpthread_exit(func(arg));
 }
 
 /* create a new thread */
 int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
-		void *(*function)(void*), void *arg)
+			void *(*function)(void*), void *arg)
 {
 	int errval = 0;
 	tcb *new_tcb;
@@ -37,8 +35,8 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 		goto out;
 	}
 	if (attr)
-		warnx("Passing attribute to %s, not implemented ignoring.",
-					__FUNCTION__);
+		warnx("Passing thread attribute to %s, not implemented ignoring.",
+						__FUNCTION__);
 	if (!scheduler)
 		init_scheduler();
 
@@ -50,7 +48,9 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 
 	errval = getcontext(&new_tcb->context);
 	if (errval) {
-		warn("Error getting context for new thread");
+		warnx("Error getting context for new thread");
+		free(new_tcb);
+		free(new_stack);
 		goto out;
 	}
 
@@ -59,10 +59,12 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 	new_tcb->context.uc_stack.ss_flags = 0;
 	new_tcb->context.uc_stack.ss_size = SIGSTKSZ;
 	new_tcb->context.uc_stack.ss_sp = new_stack;
-	new_tcb->status = READY;
 	/* Nasty cast is to shut the compiler up */
-	makecontext(&new_tcb->context, (void (*)()) startup_thread, 2,
+	makecontext(&new_tcb->context, (void (*)(void)) startup_thread, 2,
 						function, arg);
+	new_tcb->status = READY;
+	new_tcb->join_list = NULL;
+	new_tcb->id = open_tid;
 	*thread = open_tid++;
 	enqueue_job(new_tcb);
 out:
@@ -76,44 +78,89 @@ int rpthread_yield(void)
 	// change thread state from Running to Ready
 	// save context of this thread to its thread control block
 	// wwitch from thread context to scheduler context
-
+	disable_clock();
 	return swapcontext(&scheduler->running->context, &scheduler->context);
+}
+
+static int add_to_waitlist(rpthread_t twait_id, tcb *waiter, tcb **twait_ptr)
+{
+	struct tcb_list **wait_list_ptr, *parser = scheduler->q_head;
+
+	while (parser && parser->thread->id != twait_id) {
+		printf("%d\n", parser->thread->id);
+		parser = parser->next;
+	}
+	if (!parser)
+		return -1;
+	*twait_ptr = parser->thread;
+
+	wait_list_ptr = &parser->thread->join_list;
+	parser = malloc(sizeof(*parser));
+	if (!parser)
+		err(-1, "Error allocating %zu bytes", sizeof(*parser));
+	parser->thread = waiter;
+	parser->next = *wait_list_ptr;
+	*wait_list_ptr = parser;
+	return 0;
+}
+
+static void release_wait_list(struct tcb_list **wait_list)
+{
+	struct tcb_list *temp;
+
+	while (*wait_list) {
+		temp = (*wait_list)->next;
+		(*wait_list)->thread->status = READY;
+		free(*wait_list);
+		*wait_list = temp;
+	}
 }
 
 /* terminate a thread */
 void rpthread_exit(void *value_ptr)
 {
 	tcb *call_thread = scheduler->running;
-	// Deallocated any dynamic memory created when starting this thread
 
-	errx(0, "Made it into %s", __FUNCTION__);
+	disable_clock();
 	call_thread->rval = value_ptr;
-
+	call_thread->status = STOPPED;
+	release_wait_list(&call_thread->join_list);
+	if (setcontext(&scheduler->context) < 0)
+		err(-1, "Error exiting thread.");
 }
 
 
 /* Wait for thread termination */
 int rpthread_join(rpthread_t thread, void **value_ptr)
 {
+	tcb *join_thread, *call_thread = scheduler->running;
 	// wait for a specific thread to terminate
 	// de-allocate any dynamic memory created by the joining thread
 
-	// YOUR CODE HERE
+	disable_clock();
+	call_thread->status = BLOCKED;
+	if (add_to_waitlist(thread, call_thread, &join_thread) == -1)
+		return -1;
+	swapcontext(&call_thread->context, &scheduler->context);
+	if (value_ptr)
+		*value_ptr = join_thread->rval;
+	free(join_thread);
 	return 0;
 }
 
 #define LOCKED 1
 #define UNLOCKED 0
 /* initialize the mutex lock */
-int rpthread_mutex_init(rpthread_mutex_t *mutex,
-			const pthread_mutexattr_t *mutexattr)
+int rpthread_mutex_init(rpthread_mutex_t *mutex, const pthread_mutexattr_t *mutexattr)
 {
-	errx(0, "Made it into %s", __FUNCTION__);
+	if (!mutex)
+		return -1;
 	if (mutexattr)
-		fprintf(stderr, "Mutex init given attribute argument. "
-				"Not implemented, ignoring...");
-	mutex->id = 1;
-	mutex->status = UNLOCKED;
+		warnx("%s given attribute argument. "
+			"Not implemented, ignoring...", __FUNCTION__);
+
+	mutex->id = open_mutid++;
+	mutex->owner = NULL;
 	return 0;
 }
 
@@ -127,6 +174,13 @@ int rpthread_mutex_lock(rpthread_mutex_t *mutex)
 
 	// YOUR CODE HERE
 	errx(0, "Made it into %s", __FUNCTION__);
+	if (!mutex)
+		return -1;
+	if (mutex->owner) {
+		scheduler->running->status = BLOCKED;
+		rpthread_yield();
+	}
+	mutex->owner = scheduler->running;
 	return 0;
 }
 
@@ -139,6 +193,10 @@ int rpthread_mutex_unlock(rpthread_mutex_t *mutex)
 
 	// YOUR CODE HERE
 	errx(0, "Made it into %s", __FUNCTION__);
+	if (mutex->owner != scheduler->running)
+		return -1;
+	mutex->owner = NULL;
+	release_wait_list(&mutex->wait_list);
 	return 0;
 }
 
@@ -147,8 +205,8 @@ int rpthread_mutex_unlock(rpthread_mutex_t *mutex)
 int rpthread_mutex_destroy(rpthread_mutex_t *mutex)
 {
 	// Deallocate dynamic memory created in rpthread_mutex_init
-
-	errx(0, "Made it into %s", __FUNCTION__);
+	if (mutex->owner)
+		return -1;
 	return 0;
 }
 
@@ -225,19 +283,20 @@ static tcb *dequeue_job(void)
 /* Round Robin (RR) scheduling algorithm */
 static void sched_rr(void)
 {
-	tcb *next_t, *running = scheduler->running;
+	tcb *next_thread, *running = scheduler->running;
 
-	while ((next_t = dequeue_job()) != NULL && next_t->status != READY)
-		enqueue_job(next_t);
-	if (!next_t)
+	while ((next_thread = dequeue_job()) != NULL && next_thread->status != READY)
+		enqueue_job(next_thread);
+	if (!next_thread)
 		return;
 
-	next_t->status = SCHEDULED;
-	running->status = READY;
-	scheduler->running = next_t;
+	next_thread->status = SCHEDULED;
+	if (running->status != BLOCKED)
+		running->status = READY;
+	scheduler->running = next_thread;
 	enqueue_job(running);
 	enable_clock();
-	if (swapcontext(&scheduler->context, &next_t->context) < 0)
+	if (swapcontext(&scheduler->context, &next_thread->context) < 0)
 		write(STDOUT_FILENO, "Error swapping context!\n",
 				sizeof("Error swapping context!\n") - 1);
 }
@@ -327,6 +386,7 @@ static void init_scheduler(void)
 	/* This thread should have tid of 0. Our "main" thread */
 	init_thread->id = open_tid++;
 	init_thread->status = SCHEDULED;
+	init_thread->join_list = NULL;
 	scheduler->running = init_thread;
 	scheduler->q_head = NULL;
 	scheduler->q_tail = NULL;
