@@ -171,8 +171,6 @@ int rpthread_join(rpthread_t thread, void **value_ptr)
 	return 0;
 }
 
-#define LOCKED 1
-#define UNLOCKED 0
 /* initialize the mutex lock */
 int rpthread_mutex_init(rpthread_mutex_t *mutex, const pthread_mutexattr_t *mutexattr)
 {
@@ -319,9 +317,9 @@ static void sched_rr(void)
 	if (running->status == SCHEDULED)
 		running->status = READY;
 
-	while ((next_thread = dequeue_job()) != NULL && next_thread->status != READY) {
+	while ((next_thread = dequeue_job()) != NULL && next_thread->status != READY)
 		enqueue_job(next_thread);
-	}
+
 	if (!next_thread)
 		return;
 
