@@ -1,9 +1,12 @@
-// File:	rpthread_t.h
-
-// List all group member's name:
-// username of iLab:
-// iLab Server:
-
+/*
+ * File: rpthread.h
+ *
+ * List all group member's name:
+ * 	Christopher Naporlee - cmn134
+ * 	Michael Nelli - mrn73
+ *
+ * iLab Server: snow.cs.rutgers.edu
+ */
 #ifndef RTHREAD_T_H
 #define RTHREAD_T_H
 
@@ -13,18 +16,20 @@
 #define USE_RTHREAD 1
 
 #ifndef TIMESLICE
-/* defined timeslice to 5 ms, feel free to change this while testing your code
- * it can be done directly in the Makefile*/
+/*
+ * defined timeslice to 5 ms, feel free to change this while testing your code
+ * it can be done directly in the Makefile
+ */
 #define TIMESLICE 5
 #endif
 
 #define READY 0
 #define SCHEDULED 1
 #define BLOCKED 2
+#define STOPPED 4
 
 /* include lib header files that you need here: */
 #include <err.h>
-#include <unistd.h>
 #include <signal.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
@@ -33,20 +38,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ucontext.h>
+#include <unistd.h>
 
 typedef uint rpthread_t;
 
 struct tcb_list;
 
-
 typedef struct threadControlBlock {
-	/* add important states in a thread control block */
-	// thread Id
-	// thread status
-	// thread context
-	// thread stack
-	// thread priority
-	// And more ...
+	/* Probably need to add a priority field in here for MLFQ */
 	struct tcb_list *join_list;
 	void *rval;
 	ucontext_t context;
@@ -66,10 +65,7 @@ typedef struct rpthread_mutex_t {
 	unsigned int id;
 } rpthread_mutex_t;
 
-/* define your data structures here: */
-// Feel free to add your own auxiliary data structures (linked list or queue etc...)
 
-// YOUR CODE HERE
 struct scheduler {
 	tcb *running;
 	struct tcb_list *q_head;

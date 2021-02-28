@@ -1,14 +1,17 @@
-// File:	rpthread.c
-
-// List all group member's name:
-// username of iLab:
-// iLab Server:
+/*
+ * File: rpthread.c
+ *
+ * List all group member's name:
+ * 	Christopher Naporlee - cmn134
+ * 	Michael Nelli - mrn73
+ *
+ * iLab Server: snow.cs.rutgers.edu
+ */
 
 #include "rpthread.h"
 
-#define STOPPED 4
 static struct scheduler *scheduler;
-static volatile uint open_tid, open_mutid;
+static uint open_tid, open_mutid;
 
 static void init_scheduler(void);
 static void disable_clock(void);
@@ -32,6 +35,8 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 	disable_clock();
 	if (!thread || !function) {
 		errval = -1;
+		if (!scheduler)
+			return errval;
 		goto out;
 	}
 	if (attr)
@@ -75,44 +80,50 @@ out:
 /* give CPU possession to other user-level threads voluntarily */
 int rpthread_yield(void)
 {
-	// change thread state from Running to Ready
-	// save context of this thread to its thread control block
-	// wwitch from thread context to scheduler context
+	/*
+	 * change thread state from Running to Ready
+	 * save context of this thread to its thread control block
+	 * switch from thread context to scheduler context
+	 */
 	disable_clock();
 	return swapcontext(&scheduler->running->context, &scheduler->context);
 }
 
-static int add_to_waitlist(rpthread_t twait_id, tcb *waiter, tcb **twait_ptr)
+/* Fetch a pointer to a thread control block given by a thread id. */
+static tcb *fetch_tcb(rpthread_t twait_id)
 {
-	struct tcb_list **wait_list_ptr, *parser = scheduler->q_head;
+	struct tcb_list *parser = scheduler->q_head;
 
-	while (parser && parser->thread->id != twait_id) {
-		printf("%d\n", parser->thread->id);
+	while (parser && parser->thread->id != twait_id)
 		parser = parser->next;
-	}
-	if (!parser)
-		return -1;
-	*twait_ptr = parser->thread;
-
-	wait_list_ptr = &parser->thread->join_list;
-	parser = malloc(sizeof(*parser));
-	if (!parser)
-		err(-1, "Error allocating %zu bytes", sizeof(*parser));
-	parser->thread = waiter;
-	parser->next = *wait_list_ptr;
-	*wait_list_ptr = parser;
-	return 0;
+	return parser ? parser->thread : NULL;
 }
 
-static void release_wait_list(struct tcb_list **wait_list)
+/* Add a thread (waiter) to a thread's join list. */
+static void add_to_thread_waitlist(struct tcb_list **join_list, tcb *waiter)
+{
+	struct tcb_list *new_waiter;
+
+	new_waiter = malloc(sizeof(*new_waiter));
+	if (!new_waiter)
+		err(-1, "Error allocating %zu bytes", sizeof(*new_waiter));
+	new_waiter->thread = waiter;
+	new_waiter->next = *join_list;
+	*join_list = new_waiter;
+}
+
+/*
+ * Release a thread's join list, setting all the threads that are waiting
+ * to ready.
+ */
+static void release_wait_list(struct tcb_list *wait_list)
 {
 	struct tcb_list *temp;
 
-	while (*wait_list) {
-		temp = (*wait_list)->next;
-		(*wait_list)->thread->status = READY;
-		free(*wait_list);
-		*wait_list = temp;
+	for (; wait_list; wait_list = temp) {
+		temp = wait_list->next;
+		wait_list->thread->status = READY;
+		free(wait_list);
 	}
 }
 
@@ -124,7 +135,8 @@ void rpthread_exit(void *value_ptr)
 	disable_clock();
 	call_thread->rval = value_ptr;
 	call_thread->status = STOPPED;
-	release_wait_list(&call_thread->join_list);
+	release_wait_list(call_thread->join_list);
+	call_thread->join_list = NULL;
 	if (setcontext(&scheduler->context) < 0)
 		err(-1, "Error exiting thread.");
 }
@@ -134,16 +146,27 @@ void rpthread_exit(void *value_ptr)
 int rpthread_join(rpthread_t thread, void **value_ptr)
 {
 	tcb *join_thread, *call_thread = scheduler->running;
-	// wait for a specific thread to terminate
-	// de-allocate any dynamic memory created by the joining thread
 
-	disable_clock();
-	call_thread->status = BLOCKED;
-	if (add_to_waitlist(thread, call_thread, &join_thread) == -1)
+	if (thread >= open_tid)
 		return -1;
-	swapcontext(&call_thread->context, &scheduler->context);
+
+	join_thread = fetch_tcb(thread);
+	if (!join_thread)
+		return -1;
+	/*
+	 * It's possible the thread we are waiting for has stopped already.
+	 * If it hasn't stopped, block and wait on it. Otherwise, return.
+	 */
+	if (join_thread->status != STOPPED) {
+		disable_clock();
+		add_to_thread_waitlist(&join_thread->join_list, call_thread);
+		call_thread->status = BLOCKED;
+		swapcontext(&call_thread->context, &scheduler->context);
+	}
+	/* Grab the return value and free all memory */
 	if (value_ptr)
 		*value_ptr = join_thread->rval;
+	free(join_thread->context.uc_stack.ss_sp);
 	free(join_thread);
 	return 0;
 }
@@ -158,45 +181,49 @@ int rpthread_mutex_init(rpthread_mutex_t *mutex, const pthread_mutexattr_t *mute
 	if (mutexattr)
 		warnx("%s given attribute argument. "
 			"Not implemented, ignoring...", __FUNCTION__);
-
 	mutex->id = open_mutid++;
 	mutex->owner = NULL;
 	return 0;
 }
 
+
 /* aquire the mutex lock */
 int rpthread_mutex_lock(rpthread_mutex_t *mutex)
 {
-	// use the built-in test-and-set atomic function to test the mutex
-	// if the mutex is acquired successfully, enter the critical section
-	// if acquiring mutex fails, push current thread into block list and //
-	// context switch to the scheduler thread
+	tcb *call_thread = scheduler->running;
 
-	// YOUR CODE HERE
-	errx(0, "Made it into %s", __FUNCTION__);
 	if (!mutex)
 		return -1;
+	/*
+	 * If the thread is taken, join the wait list and give control back
+	 * to the scheduler.
+	 */
 	if (mutex->owner) {
-		scheduler->running->status = BLOCKED;
+		struct tcb_list *waiting_thread;
+
+		disable_clock();
+		call_thread->status = BLOCKED;
+		waiting_thread = malloc(sizeof(*waiting_thread));
+		if (!waiting_thread)
+			err(-1, "Error allocating %zu bytes.", sizeof(*waiting_thread));
+		waiting_thread->thread = call_thread;
+		waiting_thread->next = mutex->wait_list;
+		mutex->wait_list = waiting_thread;
 		rpthread_yield();
 	}
-	mutex->owner = scheduler->running;
+	mutex->owner = call_thread;
 	return 0;
 }
 
 /* release the mutex lock */
 int rpthread_mutex_unlock(rpthread_mutex_t *mutex)
 {
-	// Release mutex and make it available again.
-	// Put threads in block list to run queue
-	// so that they could compete for mutex later.
-
-	// YOUR CODE HERE
-	errx(0, "Made it into %s", __FUNCTION__);
+	/* Make sure whoever is calling this function is the owner */
 	if (mutex->owner != scheduler->running)
 		return -1;
 	mutex->owner = NULL;
-	release_wait_list(&mutex->wait_list);
+	release_wait_list(mutex->wait_list);
+	mutex->wait_list = NULL;
 	return 0;
 }
 
@@ -204,7 +231,6 @@ int rpthread_mutex_unlock(rpthread_mutex_t *mutex)
 /* destroy the mutex */
 int rpthread_mutex_destroy(rpthread_mutex_t *mutex)
 {
-	// Deallocate dynamic memory created in rpthread_mutex_init
 	if (mutex->owner)
 		return -1;
 	return 0;
@@ -266,17 +292,16 @@ static void enqueue_job(tcb *thread)
  */
 static tcb *dequeue_job(void)
 {
-	struct tcb_list **parser = &scheduler->q_head;
-	struct tcb_list *new_head;
+	struct tcb_list *new_head, **head = &scheduler->q_head;
 	tcb *job;
 
 	/* There should be at no point where our queue is empty. */
-	if (!*parser)
+	if (!*head)
 		exit(-1);
-	new_head = (*parser)->next;
-	job = (*parser)->thread;
-	free(*parser);
-	*parser = new_head;
+	new_head = (*head)->next;
+	job = (*head)->thread;
+	free(*head);
+	*head = new_head;
 	return job;
 }
 
@@ -285,16 +310,23 @@ static void sched_rr(void)
 {
 	tcb *next_thread, *running = scheduler->running;
 
-	while ((next_thread = dequeue_job()) != NULL && next_thread->status != READY)
+	/*
+	 * We should probably put finished threads in their own list to
+	 * stop our scheduler from considering them, but for now just keep them.
+	 */
+	enqueue_job(running);
+	/* If the our running became blocked, don't switch it's state */
+	if (running->status == SCHEDULED)
+		running->status = READY;
+
+	while ((next_thread = dequeue_job()) != NULL && next_thread->status != READY) {
 		enqueue_job(next_thread);
+	}
 	if (!next_thread)
 		return;
 
 	next_thread->status = SCHEDULED;
-	if (running->status != BLOCKED)
-		running->status = READY;
 	scheduler->running = next_thread;
-	enqueue_job(running);
 	enable_clock();
 	if (swapcontext(&scheduler->context, &next_thread->context) < 0)
 		write(STDOUT_FILENO, "Error swapping context!\n",
@@ -306,7 +338,7 @@ static void sched_mlfq(void)
 {
 	// Your own implementation of MLFQ
 	// (feel free to modify arguments and return types)
-	err(0, "Made it into %s", __FUNCTION__);
+	errx(0, "Made it into %s", __FUNCTION__);
 
 }
 
@@ -343,7 +375,6 @@ static void schedule(void)
 static void sched_preempt(int signum)
 {
 	disable_clock();
-	write(1, "PREEMPT\n", 8);
 	if (swapcontext(&scheduler->running->context, &scheduler->context) < 0) {
 		write(STDOUT_FILENO, "Preemption swap to scheduler failed.\n", 37);
 		exit(-1);
@@ -391,4 +422,3 @@ static void init_scheduler(void)
 	scheduler->q_head = NULL;
 	scheduler->q_tail = NULL;
 }
-
