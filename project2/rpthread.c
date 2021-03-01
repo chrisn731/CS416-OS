@@ -166,8 +166,8 @@ int rpthread_join(rpthread_t thread, void **value_ptr)
 	/* Grab the return value and free all memory */
 	if (value_ptr)
 		*value_ptr = join_thread->rval;
-	free(join_thread->context.uc_stack.ss_sp);
-	free(join_thread);
+
+	join_thread->status = JOINED;
 	return 0;
 }
 
@@ -254,6 +254,31 @@ static void disable_clock(void)
 	setitimer(ITIMER_PROF, &timer, NULL);
 }
 
+static void list_add_post(struct tcb_list *new, struct tcb_list *curr,
+							struct tcb_list *next)
+{
+	new->next = next;
+	new->prev = curr;
+	curr->next = new;
+	next->prev = new;
+}
+
+static void list_add_prev(struct tcb_list *new, struct tcb_list *curr,
+			  				struct tcb_list *prev)
+{
+	new->next = curr;
+	new->prev = prev;
+	curr->prev = new;
+	prev->next = new;
+}
+
+static void list_del_curr(struct tcb_list *prev, struct tcb_list *next)
+{
+	prev->next = next;
+	next->prev = prev;
+}
+
+
 /*
  * Really basic ll queue for now just to get basic thread stuff running.
  * All jobs that are added are put on the tail end.
@@ -267,12 +292,13 @@ static void enqueue_job(tcb *thread)
 	if (!new_node)
 		err(-1, "Error allocating %zu bytes.", sizeof(*new_node));
 	new_node->thread = thread;
-	new_node->next = NULL;
+	new_node->next = new_node;
+	new_node->prev = new_node;
 
 	/* Update the end of the list and the tail to point to the new end */
-	if (*tail)
-		(*tail)->next = new_node;
-	*tail = new_node;
+	if (!*tail)
+		*tail = new_node;
+	list_add_prev(new_node, *tail, (*tail)->prev);
 
 	/*
 	 * If there is currently no head to our list,
@@ -290,16 +316,25 @@ static void enqueue_job(tcb *thread)
  */
 static tcb *dequeue_job(void)
 {
-	struct tcb_list *new_head, **head = &scheduler->q_head;
+	struct tcb_list *new_head, **cursor = &scheduler->q_tail;
 	tcb *job;
 
 	/* There should be at no point where our queue is empty. */
-	if (!*head)
+	if (!*cursor)
 		exit(-1);
-	new_head = (*head)->next;
-	job = (*head)->thread;
-	free(*head);
-	*head = new_head;
+	while ((*cursor)->thread->status != READY) {
+		if ((*cursor)->thread->status == JOINED) {
+			struct tcb_list *to_free = *cursor;
+			list_del_curr(to_free->prev, to_free->next);
+			*cursor = (*cursor)->next;
+			free(to_free->thread);
+			free(to_free);
+		} else {
+			*cursor = (*cursor)->next;
+		}
+	}
+	job = (*cursor)->thread;
+	*cursor = (*cursor)->next;
 	return job;
 }
 
@@ -312,17 +347,12 @@ static void sched_rr(void)
 	 * We should probably put finished threads in their own list to
 	 * stop our scheduler from considering them, but for now just keep them.
 	 */
-	enqueue_job(running);
+
 	/* If the our running became blocked, don't switch it's state */
 	if (running->status == SCHEDULED)
 		running->status = READY;
 
-	while ((next_thread = dequeue_job()) != NULL && next_thread->status != READY)
-		enqueue_job(next_thread);
-
-	if (!next_thread)
-		return;
-
+	next_thread = dequeue_job();
 	next_thread->status = SCHEDULED;
 	scheduler->running = next_thread;
 	enable_clock();
@@ -419,4 +449,5 @@ static void init_scheduler(void)
 	scheduler->running = init_thread;
 	scheduler->q_head = NULL;
 	scheduler->q_tail = NULL;
+	enqueue_job(init_thread);
 }

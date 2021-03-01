@@ -27,6 +27,7 @@
 #define SCHEDULED 1
 #define BLOCKED 2
 #define STOPPED 4
+#define JOINED	8
 
 /* include lib header files that you need here: */
 #include <err.h>
@@ -56,6 +57,7 @@ typedef struct threadControlBlock {
 struct tcb_list {
 	tcb *thread;
 	struct tcb_list *next;
+	struct tcb_list *prev;
 };
 
 /* mutex struct definition */
