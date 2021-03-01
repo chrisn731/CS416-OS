@@ -14,8 +14,8 @@ static struct scheduler *scheduler;
 static uint open_tid, open_mutid;
 
 static void init_scheduler(void);
-static void disable_clock(void);
-static void enable_clock(void);
+static void disable_preempt(void);
+static void enable_preempt(void);
 static void enqueue_job(tcb *);
 
 static void startup_thread(void *(*func)(void *), void *arg)
@@ -32,18 +32,15 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 	void *new_stack;
 
 	/* We do not want to be disturbed while we are going through the motions */
-	disable_clock();
-	if (!thread || !function) {
-		errval = -1;
-		if (!scheduler)
-			return errval;
-		goto out;
-	}
+	if (!thread || !function)
+		return -1;
 	if (attr)
 		warnx("Passing thread attribute to %s, not implemented ignoring.",
 						__FUNCTION__);
-	if (!scheduler)
+	if (!scheduler) {
 		init_scheduler();
+		enable_preempt();
+	}
 
 	new_tcb = malloc(sizeof(*new_tcb));
 	new_stack = malloc(SIGSTKSZ);
@@ -56,7 +53,7 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 		warnx("Error getting context for new thread");
 		free(new_tcb);
 		free(new_stack);
-		goto out;
+		return -1;
 	}
 
 	/* Link new context to running context */
@@ -72,9 +69,7 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 	new_tcb->id = open_tid;
 	*thread = open_tid++;
 	enqueue_job(new_tcb);
-out:
-	enable_clock();
-	return errval;
+	return 0;
 }
 
 /* give CPU possession to other user-level threads voluntarily */
@@ -85,14 +80,14 @@ int rpthread_yield(void)
 	 * save context of this thread to its thread control block
 	 * switch from thread context to scheduler context
 	 */
-	disable_clock();
+	disable_preempt();
 	return swapcontext(&scheduler->running->context, &scheduler->context);
 }
 
 /* Fetch a pointer to a thread control block given by a thread id. */
 static tcb *fetch_tcb(rpthread_t twait_id)
 {
-	struct tcb_list *parser = scheduler->q_head;
+	struct tcb_list *parser = scheduler->q;
 
 	while (parser && parser->thread->id != twait_id)
 		parser = parser->next;
@@ -132,7 +127,7 @@ void rpthread_exit(void *value_ptr)
 {
 	tcb *call_thread = scheduler->running;
 
-	disable_clock();
+	disable_preempt();
 	call_thread->rval = value_ptr;
 	call_thread->status = STOPPED;
 	release_wait_list(call_thread->join_list);
@@ -158,7 +153,7 @@ int rpthread_join(rpthread_t thread, void **value_ptr)
 	 * If it hasn't stopped, block and wait on it. Otherwise, return.
 	 */
 	if (join_thread->status != STOPPED) {
-		disable_clock();
+		disable_preempt();
 		add_to_thread_waitlist(&join_thread->join_list, call_thread);
 		call_thread->status = BLOCKED;
 		swapcontext(&call_thread->context, &scheduler->context);
@@ -199,7 +194,7 @@ int rpthread_mutex_lock(rpthread_mutex_t *mutex)
 	if (mutex->owner) {
 		struct tcb_list *waiting_thread;
 
-		disable_clock();
+		disable_preempt();
 		call_thread->status = BLOCKED;
 		waiting_thread = malloc(sizeof(*waiting_thread));
 		if (!waiting_thread)
@@ -235,7 +230,7 @@ int rpthread_mutex_destroy(rpthread_mutex_t *mutex)
 }
 
 /* Start clock for our preemption interrupts */
-static void enable_clock(void)
+static void enable_preempt(void)
 {
 	struct itimerval timer = {
 		.it_interval = {0, TIMESLICE * 1000},
@@ -245,7 +240,7 @@ static void enable_clock(void)
 }
 
 /* Disable clock for our preemption interrupts */
-static void disable_clock(void)
+static void disable_preempt(void)
 {
 	struct itimerval timer = {
 		.it_interval = {0, 0},
@@ -254,6 +249,10 @@ static void disable_clock(void)
 	setitimer(ITIMER_PROF, &timer, NULL);
 }
 
+/*
+ * Puts a @new node in between @curr, and curr's next node (@next)
+ * curr <-> next  to  curr <-> new <-> next
+ */
 static void list_add_post(struct tcb_list *new, struct tcb_list *curr,
 							struct tcb_list *next)
 {
@@ -263,6 +262,10 @@ static void list_add_post(struct tcb_list *new, struct tcb_list *curr,
 	next->prev = new;
 }
 
+/*
+ * Puts a @new node in between @curr, and curr's previous node (@prev).
+ * prev <-> curr  to  prev <-> new <-> curr
+ */
 static void list_add_prev(struct tcb_list *new, struct tcb_list *curr,
 			  				struct tcb_list *prev)
 {
@@ -272,6 +275,10 @@ static void list_add_prev(struct tcb_list *new, struct tcb_list *curr,
 	prev->next = new;
 }
 
+/*
+ * Links @prev's next ptr to @next and links @next's prev ptr to prev.
+ * prev <-> to_del <-> next  to  prev <-> next
+ */
 static void list_del_curr(struct tcb_list *prev, struct tcb_list *next)
 {
 	prev->next = next;
@@ -285,7 +292,7 @@ static void list_del_curr(struct tcb_list *prev, struct tcb_list *next)
  */
 static void enqueue_job(tcb *thread)
 {
-	struct tcb_list **tail = &scheduler->q_tail;
+	struct tcb_list **tail = &scheduler->q;
 	struct tcb_list *new_node;
 
 	new_node = malloc(sizeof(*new_node));
@@ -299,14 +306,6 @@ static void enqueue_job(tcb *thread)
 	if (!*tail)
 		*tail = new_node;
 	list_add_prev(new_node, *tail, (*tail)->prev);
-
-	/*
-	 * If there is currently no head to our list,
-	 * that means we prob just initialized.
-	 * For now set the head to be the tail, so dequeue_job() works
-	 */
-	if (!scheduler->q_head)
-		scheduler->q_head = scheduler->q_tail;
 }
 
 /*
@@ -316,7 +315,7 @@ static void enqueue_job(tcb *thread)
  */
 static tcb *dequeue_job(void)
 {
-	struct tcb_list *new_head, **cursor = &scheduler->q_tail;
+	struct tcb_list **cursor = &scheduler->q;
 	tcb *job;
 
 	/* There should be at no point where our queue is empty. */
@@ -355,7 +354,7 @@ static void sched_rr(void)
 	next_thread = dequeue_job();
 	next_thread->status = SCHEDULED;
 	scheduler->running = next_thread;
-	enable_clock();
+	enable_preempt();
 	if (swapcontext(&scheduler->context, &next_thread->context) < 0)
 		write(STDOUT_FILENO, "Error swapping context!\n",
 				sizeof("Error swapping context!\n") - 1);
@@ -402,7 +401,7 @@ static void schedule(void)
  */
 static void sched_preempt(int signum)
 {
-	disable_clock();
+	disable_preempt();
 	if (swapcontext(&scheduler->running->context, &scheduler->context) < 0) {
 		write(STDOUT_FILENO, "Preemption swap to scheduler failed.\n", 37);
 		exit(-1);
@@ -447,7 +446,7 @@ static void init_scheduler(void)
 	init_thread->status = SCHEDULED;
 	init_thread->join_list = NULL;
 	scheduler->running = init_thread;
-	scheduler->q_head = NULL;
-	scheduler->q_tail = NULL;
+	scheduler->num_qs = 1;
+	scheduler->q = NULL;
 	enqueue_job(init_thread);
 }

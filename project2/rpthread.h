@@ -70,8 +70,7 @@ typedef struct rpthread_mutex_t {
 
 struct scheduler {
 	tcb *running;
-	struct tcb_list *q_head;
-	struct tcb_list *q_tail;
+	struct tcb_list *q;
 	ucontext_t context;
 	unsigned int num_qs;
 };
