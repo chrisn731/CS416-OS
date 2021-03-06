@@ -16,7 +16,7 @@ static uint open_tid, open_mutid;
 static void init_scheduler(void);
 static void disable_preempt(void);
 static void enable_preempt(void);
-static void enqueue_job(tcb *);
+static void enqueue_job(tcb *, struct tcb_list **);
 
 static void startup_thread(void *(*func)(void *), void *arg)
 {
@@ -68,7 +68,7 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 	new_tcb->join_list = NULL;
 	new_tcb->id = open_tid;
 	*thread = open_tid++;
-	enqueue_job(new_tcb);
+	enqueue_job(new_tcb, &scheduler->q[0]);
 	return 0;
 }
 
@@ -87,11 +87,21 @@ int rpthread_yield(void)
 /* Fetch a pointer to a thread control block given by a thread id. */
 static tcb *fetch_tcb(rpthread_t twait_id)
 {
-	struct tcb_list *parser = scheduler->q;
+	struct tcb_list *parser;
+	int i;
 
-	while (parser && parser->thread->id != twait_id)
-		parser = parser->next;
-	return parser ? parser->thread : NULL;
+	for (i = 0; i < NUM_QS; i++) {
+		struct tcb_list *head = scheduler->q[i];
+		parser = head;
+		while (head) {
+		    	parser = parser->next;
+			if (parser->thread->id == twait_id)
+				return parser->thread;
+		    	if (parser == head)
+			    	break;
+		}
+	}
+	return NULL;
 }
 
 /* Add a thread (waiter) to a thread's join list. */
@@ -195,6 +205,7 @@ int rpthread_mutex_lock(rpthread_mutex_t *mutex)
 		struct tcb_list *waiting_thread;
 
 		disable_preempt();
+		printf("Mut owner: %d\n", mutex->owner->id);
 		call_thread->status = BLOCKED;
 		waiting_thread = malloc(sizeof(*waiting_thread));
 		if (!waiting_thread)
@@ -211,12 +222,25 @@ int rpthread_mutex_lock(rpthread_mutex_t *mutex)
 /* release the mutex lock */
 int rpthread_mutex_unlock(rpthread_mutex_t *mutex)
 {
+	struct itimerval itv;
 	/* Make sure whoever is calling this function is the owner */
 	if (mutex->owner != scheduler->running)
 		return -1;
+	/*
 	mutex->owner = NULL;
 	release_wait_list(mutex->wait_list);
 	mutex->wait_list = NULL;
+	*/
+	if (mutex->wait_list) {
+		struct tcb_list *to_free;
+		mutex->owner = mutex->wait_list->thread;
+		mutex->owner->status = READY;
+		to_free = mutex->wait_list;
+		mutex->wait_list = mutex->wait_list->next;
+		free(to_free);
+	} else {
+		mutex->owner = NULL;
+	}
 	return 0;
 }
 
@@ -290,9 +314,9 @@ static void list_del_curr(struct tcb_list *prev, struct tcb_list *next)
  * Really basic ll queue for now just to get basic thread stuff running.
  * All jobs that are added are put on the tail end.
  */
-static void enqueue_job(tcb *thread)
+static void enqueue_job(tcb *thread, struct tcb_list **q)
 {
-	struct tcb_list **tail = &scheduler->q;
+	struct tcb_list **tail = q;
 	struct tcb_list *new_node;
 
 	new_node = malloc(sizeof(*new_node));
@@ -302,10 +326,14 @@ static void enqueue_job(tcb *thread)
 	new_node->next = new_node;
 	new_node->prev = new_node;
 
-	/* Update the end of the list and the tail to point to the new end */
+ 	/* Update the end of the list and the tail to point to the new end */
 	if (!*tail)
 		*tail = new_node;
 	list_add_prev(new_node, *tail, (*tail)->prev);
+}
+
+static void thread_log(tcb *thread) {
+	printf("%p status: %d, ID: %d\n", thread, thread->status, thread->id);
 }
 
 /*
@@ -313,9 +341,10 @@ static void enqueue_job(tcb *thread)
  * For now, I have it to be if the head == NULL that is an error,
  * but that should probably be changed for different logic...
  */
-static tcb *dequeue_job(void)
+static tcb *dequeue_job(struct tcb_list **q)
 {
-	struct tcb_list **cursor = &scheduler->q;
+	struct tcb_list **cursor = q;
+	struct tcb_list *head = *cursor;
 	tcb *job;
 
 	/* There should be at no point where our queue is empty. */
@@ -326,10 +355,26 @@ static tcb *dequeue_job(void)
 			struct tcb_list *to_free = *cursor;
 			list_del_curr(to_free->prev, to_free->next);
 			*cursor = (*cursor)->next;
+			free(to_free->thread->context.uc_stack.ss_sp);
 			free(to_free->thread);
 			free(to_free);
+			//printf("***Thread joined***\n");
+			if (to_free == *cursor) {
+				printf("free single list: %p\n", to_free);
+				*q = NULL;
+				return NULL;
+			}
+			if (to_free == head) {
+				head = (*cursor);
+				continue;
+			}
 		} else {
 			*cursor = (*cursor)->next;
+		}
+
+		if (head == *cursor) { 
+			//printf("it happened!!!!!\n");
+			return NULL;
 		}
 	}
 	job = (*cursor)->thread;
@@ -338,7 +383,7 @@ static tcb *dequeue_job(void)
 }
 
 /* Round Robin (RR) scheduling algorithm */
-static void sched_rr(void)
+static int sched_rr(struct tcb_list **q)
 {
 	tcb *next_thread, *running = scheduler->running;
 
@@ -351,22 +396,81 @@ static void sched_rr(void)
 	if (running->status == SCHEDULED)
 		running->status = READY;
 
-	next_thread = dequeue_job();
+	//make sure next thread returned isnt null
+	next_thread = dequeue_job(q);
+	if (next_thread == NULL)
+		return -1;
 	next_thread->status = SCHEDULED;
 	scheduler->running = next_thread;
 	enable_preempt();
 	if (swapcontext(&scheduler->context, &next_thread->context) < 0)
 		write(STDOUT_FILENO, "Error swapping context!\n",
 				sizeof("Error swapping context!\n") - 1);
+	return 0;
 }
+
+static int count_queue(struct tcb_list *q) {
+	//struct tcb_list *tmp = q;
+	struct tcb_list *ptr;
+	int c = 0;
+	if (!q)
+		return 0;
+	for (ptr = q->next; ptr != q; ptr = ptr->next) 
+		c++;	
+	return c+1;	
+}	
 
 /* Preemptive MLFQ scheduling algorithm */
 static void sched_mlfq(void)
 {
 	// Your own implementation of MLFQ
 	// (feel free to modify arguments and return types)
-	errx(0, "Made it into %s", __FUNCTION__);
+	//
+	// 1) 4 queues
+	// 2) run thru highest non-empty queue in RR
+	// 3) if a new task is put into the top queue, cycle back to the top queue after TIMESLICE
+	// 4) if a task yields before TIMESLICE is done, it doesn't move
+	// 	4.1) else it moves down a layer
 
+	//Here check to see if running process used up its whole timeslice. if it did
+	//then move it down a layer
+	unsigned int i = scheduler->priority;
+	struct tcb_list *moving_tcb_list, *new_tcb_list;
+
+	for (i = 0; i < NUM_QS; i++) 
+		printf("QUEUE[%d] SIZE: %d\n", i, count_queue(scheduler->q[i]));
+	printf("----------------------------------------\n");
+
+	i = scheduler->priority;
+	if (i < NUM_QS - 1) {
+		moving_tcb_list = scheduler->q[i]->prev; 
+		if (moving_tcb_list->next == moving_tcb_list) {
+			scheduler->q[i] = NULL;
+		} else {
+			list_del_curr(moving_tcb_list->prev, moving_tcb_list->next);
+			//scheduler->q[i] = scheduler->q[i]->next;
+		}
+		new_tcb_list = scheduler->q[i+1];	
+		if (new_tcb_list == NULL) {
+			scheduler->q[i+1] = moving_tcb_list;
+			moving_tcb_list->next = moving_tcb_list;
+			moving_tcb_list->prev = moving_tcb_list;
+		} else {
+			list_add_prev(moving_tcb_list, scheduler->q[i+1], scheduler->q[i+1]->prev);
+		}
+		
+	}	
+
+	for (i = 0; i < NUM_QS; i++) {
+		if (scheduler->q[i]) {
+			scheduler->priority = i;
+			//printf("layer: %d\n", i);
+			if (sched_rr(&scheduler->q[i]) != -1)
+				return;
+		}
+	}
+
+	errx(0, "Empty ass queue %s", __FUNCTION__);
 }
 
 /* scheduler */
@@ -387,7 +491,7 @@ static void schedule(void)
 	/* Idek right now, too tired, just infinite loop */
 	for (;;) {
 #ifndef MLFQ
-		sched_rr();
+		sched_rr(scheduler->q);
 #else
 		sched_mlfq();
 #endif
@@ -418,6 +522,7 @@ static void init_scheduler(void)
 	tcb *init_thread;
 	void *sched_stack;
 	struct sigaction sa;
+	int i;
 
 	scheduler = malloc(sizeof(*scheduler));
 	init_thread = malloc(sizeof(*init_thread));
@@ -446,7 +551,9 @@ static void init_scheduler(void)
 	init_thread->status = SCHEDULED;
 	init_thread->join_list = NULL;
 	scheduler->running = init_thread;
-	scheduler->num_qs = 1;
-	scheduler->q = NULL;
-	enqueue_job(init_thread);
+	scheduler->priority = 0;
+	//scheduler->num_qs = 1;
+	for (i = 0; i < NUM_QS; i++) 
+		scheduler->q[i] = NULL;
+	enqueue_job(init_thread, &scheduler->q[0]);
 }

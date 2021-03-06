@@ -23,6 +23,12 @@
 #define TIMESLICE 5
 #endif
 
+#ifdef MLFQ
+#define NUM_QS 4
+#else
+#define NUM_QS 1
+#endif
+
 #define READY 0
 #define SCHEDULED 1
 #define BLOCKED 2
@@ -70,9 +76,10 @@ typedef struct rpthread_mutex_t {
 
 struct scheduler {
 	tcb *running;
-	struct tcb_list *q;
+	struct tcb_list *q[NUM_QS];
+	//struct tcb_list *mlfq[NUM_QS];
 	ucontext_t context;
-	unsigned int num_qs;
+	unsigned int priority;
 };
 
 
