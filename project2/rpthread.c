@@ -12,6 +12,7 @@
 
 static struct scheduler *scheduler;
 static uint open_tid, open_mutid;
+static unsigned int time_elapsed;
 
 static void init_scheduler(void);
 static void disable_preempt(void);
@@ -36,7 +37,7 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 		return -1;
 	if (attr)
 		warnx("Passing thread attribute to %s, not implemented ignoring.",
-						__FUNCTION__);
+						__func__);
 	if (!scheduler) {
 		init_scheduler();
 		enable_preempt();
@@ -45,8 +46,8 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 	new_tcb = malloc(sizeof(*new_tcb));
 	new_stack = malloc(SIGSTKSZ);
 	if (!new_tcb || !new_stack)
-		err(-1, "Error allocating %zu bytes.",
-			!new_stack ? SIGSTKSZ : sizeof(*new_tcb));
+		err(-1, "%s: Error allocating %zu bytes.",
+			__func__, !new_stack ? SIGSTKSZ : sizeof(*new_tcb));
 
 	errval = getcontext(&new_tcb->context);
 	if (errval) {
@@ -87,11 +88,10 @@ int rpthread_yield(void)
 /* Fetch a pointer to a thread control block given by a thread id. */
 static tcb *fetch_tcb(rpthread_t twait_id)
 {
-	struct tcb_list *parser;
 	int i;
 
 	for (i = 0; i < NUM_QS; i++) {
-		struct tcb_list *head = scheduler->q[i];
+		struct tcb_list *parser, *head = scheduler->q[i];
 		parser = head;
 		while (head) {
 		    	parser = parser->next;
@@ -111,7 +111,8 @@ static void add_to_thread_waitlist(struct tcb_list **join_list, tcb *waiter)
 
 	new_waiter = malloc(sizeof(*new_waiter));
 	if (!new_waiter)
-		err(-1, "Error allocating %zu bytes", sizeof(*new_waiter));
+		err(-1, "%s: Error allocating %zu bytes",
+			__func__, sizeof(*new_waiter));
 	new_waiter->thread = waiter;
 	new_waiter->next = *join_list;
 	*join_list = new_waiter;
@@ -143,7 +144,7 @@ void rpthread_exit(void *value_ptr)
 	release_wait_list(call_thread->join_list);
 	call_thread->join_list = NULL;
 	if (setcontext(&scheduler->context) < 0)
-		err(-1, "Error exiting thread.");
+		err(-1, "%s: Error exiting thread.", __func__);
 }
 
 
@@ -171,7 +172,6 @@ int rpthread_join(rpthread_t thread, void **value_ptr)
 	/* Grab the return value and free all memory */
 	if (value_ptr)
 		*value_ptr = join_thread->rval;
-
 	join_thread->status = JOINED;
 	return 0;
 }
@@ -183,94 +183,11 @@ int rpthread_mutex_init(rpthread_mutex_t *mutex, const pthread_mutexattr_t *mute
 		return -1;
 	if (mutexattr)
 		warnx("%s given attribute argument. "
-			"Not implemented, ignoring...", __FUNCTION__);
+			"Not implemented, ignoring...", __func__);
 	mutex->id = open_mutid++;
-	mutex->owner = NULL;
-	return 0;
-}
-
-
-/* aquire the mutex lock */
-int rpthread_mutex_lock(rpthread_mutex_t *mutex)
-{
-	tcb *call_thread = scheduler->running;
-
-	if (!mutex)
-		return -1;
-	/*
-	 * If the thread is taken, join the wait list and give control back
-	 * to the scheduler.
-	 */
-	if (mutex->owner) {
-		struct tcb_list *waiting_thread;
-
-		disable_preempt();
-		printf("Mut owner: %d\n", mutex->owner->id);
-		call_thread->status = BLOCKED;
-		waiting_thread = malloc(sizeof(*waiting_thread));
-		if (!waiting_thread)
-			err(-1, "Error allocating %zu bytes.", sizeof(*waiting_thread));
-		waiting_thread->thread = call_thread;
-		waiting_thread->next = mutex->wait_list;
-		mutex->wait_list = waiting_thread;
-		rpthread_yield();
-	}
-	mutex->owner = call_thread;
-	return 0;
-}
-
-/* release the mutex lock */
-int rpthread_mutex_unlock(rpthread_mutex_t *mutex)
-{
-	struct itimerval itv;
-	/* Make sure whoever is calling this function is the owner */
-	if (mutex->owner != scheduler->running)
-		return -1;
-	/*
-	mutex->owner = NULL;
-	release_wait_list(mutex->wait_list);
 	mutex->wait_list = NULL;
-	*/
-	if (mutex->wait_list) {
-		struct tcb_list *to_free;
-		mutex->owner = mutex->wait_list->thread;
-		mutex->owner->status = READY;
-		to_free = mutex->wait_list;
-		mutex->wait_list = mutex->wait_list->next;
-		free(to_free);
-	} else {
-		mutex->owner = NULL;
-	}
+	mutex->owner = NULL;
 	return 0;
-}
-
-
-/* destroy the mutex */
-int rpthread_mutex_destroy(rpthread_mutex_t *mutex)
-{
-	if (mutex->owner)
-		return -1;
-	return 0;
-}
-
-/* Start clock for our preemption interrupts */
-static void enable_preempt(void)
-{
-	struct itimerval timer = {
-		.it_interval = {0, TIMESLICE * 1000},
-		.it_value = {0, TIMESLICE * 1000}
-	};
-	setitimer(ITIMER_PROF, &timer, NULL);
-}
-
-/* Disable clock for our preemption interrupts */
-static void disable_preempt(void)
-{
-	struct itimerval timer = {
-		.it_interval = {0, 0},
-		.it_value = {0, 0}
-	};
-	setitimer(ITIMER_PROF, &timer, NULL);
 }
 
 /*
@@ -310,9 +227,99 @@ static void list_del_curr(struct tcb_list *prev, struct tcb_list *next)
 }
 
 
+/* aquire the mutex lock */
+int rpthread_mutex_lock(rpthread_mutex_t *mutex)
+{
+	tcb *call_thread = scheduler->running;
+
+	if (!mutex)
+		return -1;
+	/*
+	 * If the mutex is taken, join the wait list and give control back
+	 * to the scheduler. Also, when we swap back, we don't want the compiler
+	 * to be smart and try and save one copy of the owner. We want to grab it
+	 * every time.
+	 */
+	while ((volatile tcb *) mutex->owner) {
+		struct tcb_list *waiting_thread;
+
+		disable_preempt();
+		call_thread->status = BLOCKED;
+		waiting_thread = malloc(sizeof(*waiting_thread));
+		if (!waiting_thread)
+			err(-1, "%s: Error allocating %zu bytes.",
+				__func__, sizeof(*waiting_thread));
+		waiting_thread->thread = call_thread;
+		waiting_thread->next = mutex->wait_list;
+		mutex->wait_list = waiting_thread;
+		swapcontext(&scheduler->running->context, &scheduler->context);
+	}
+	mutex->owner = call_thread;
+	return 0;
+}
+
+/* release the mutex lock */
+int rpthread_mutex_unlock(rpthread_mutex_t *mutex)
+{
+	sigset_t x;
+
+	if (mutex->owner != scheduler->running)
+		return -1;
+	/*
+	 * We do not want to be preeempted while we are setting other
+	 * threads to the ready state. If we get preempted, during the release
+	 * bad things might happen...
+	 * Therefore, block the preemption signal and then check to see if
+	 * the signal is sent after we are done.
+	 */
+	sigemptyset(&x);
+	sigaddset(&x, SIGPROF);
+	sigprocmask(SIG_BLOCK, &x, NULL);
+	mutex->owner = NULL;
+	release_wait_list(mutex->wait_list);
+	mutex->wait_list = NULL;
+	sigprocmask(SIG_UNBLOCK, &x, NULL);
+	return 0;
+}
+
+
+/* destroy the mutex */
+int rpthread_mutex_destroy(rpthread_mutex_t *mutex)
+{
+	if (mutex->owner)
+		return -1;
+	release_wait_list(mutex->wait_list);
+	return 0;
+}
+
+/* Start clock for our preemption interrupts */
+static void enable_preempt(void)
+{
+	struct itimerval timer = {
+		.it_interval = {0, 0},
+		.it_value = {0, TIMESLICE * 1000}
+	};
+
+	setitimer(ITIMER_PROF, &timer, NULL);
+}
+
+/* Disable clock for our preemption interrupts */
+static void disable_preempt(void)
+{
+	struct itimerval timer = {
+		.it_interval = {0, 0},
+		.it_value = {0, 0}
+	};
+
+	setitimer(ITIMER_PROF, &timer, NULL);
+}
+
+
+
 /*
- * Really basic ll queue for now just to get basic thread stuff running.
- * All jobs that are added are put on the tail end.
+ * enqueue_job - puts @thread at the end of the queue.
+ * @thread: pointer to a thread to be enqueued.
+ * @q: pointer to the head of the list.
  */
 static void enqueue_job(tcb *thread, struct tcb_list **q)
 {
@@ -321,7 +328,8 @@ static void enqueue_job(tcb *thread, struct tcb_list **q)
 
 	new_node = malloc(sizeof(*new_node));
 	if (!new_node)
-		err(-1, "Error allocating %zu bytes.", sizeof(*new_node));
+		err(-1, "%s: Error allocating %zu bytes.",
+			__func__, sizeof(*new_node));
 	new_node->thread = thread;
 	new_node->next = new_node;
 	new_node->prev = new_node;
@@ -332,14 +340,10 @@ static void enqueue_job(tcb *thread, struct tcb_list **q)
 	list_add_prev(new_node, *tail, (*tail)->prev);
 }
 
-static void thread_log(tcb *thread) {
-	printf("%p status: %d, ID: %d\n", thread, thread->status, thread->id);
-}
-
 /*
- * Takes job off of the head of the ll queue.
- * For now, I have it to be if the head == NULL that is an error,
- * but that should probably be changed for different logic...
+ * dequeue_job - returns a pointer to a tcb that has a status of READY
+ * 			or NULL if no job found.
+ * @q: Pointer to the head of the queue
  */
 static tcb *dequeue_job(struct tcb_list **q)
 {
@@ -358,13 +362,13 @@ static tcb *dequeue_job(struct tcb_list **q)
 			free(to_free->thread->context.uc_stack.ss_sp);
 			free(to_free->thread);
 			free(to_free);
-			//printf("***Thread joined***\n");
 			if (to_free == *cursor) {
-				printf("free single list: %p\n", to_free);
+				/* The free'd node, is the only node in the list */
 				*q = NULL;
 				return NULL;
 			}
 			if (to_free == head) {
+				/* The free'd node, is the head of the list */
 				head = (*cursor);
 				continue;
 			}
@@ -372,8 +376,7 @@ static tcb *dequeue_job(struct tcb_list **q)
 			*cursor = (*cursor)->next;
 		}
 
-		if (head == *cursor) { 
-			//printf("it happened!!!!!\n");
+		if (head == *cursor) {
 			return NULL;
 		}
 	}
@@ -398,27 +401,17 @@ static int sched_rr(struct tcb_list **q)
 
 	//make sure next thread returned isnt null
 	next_thread = dequeue_job(q);
-	if (next_thread == NULL)
+	if (!next_thread)
 		return -1;
 	next_thread->status = SCHEDULED;
 	scheduler->running = next_thread;
+	time_elapsed = 0;
 	enable_preempt();
 	if (swapcontext(&scheduler->context, &next_thread->context) < 0)
 		write(STDOUT_FILENO, "Error swapping context!\n",
 				sizeof("Error swapping context!\n") - 1);
 	return 0;
 }
-
-static int count_queue(struct tcb_list *q) {
-	//struct tcb_list *tmp = q;
-	struct tcb_list *ptr;
-	int c = 0;
-	if (!q)
-		return 0;
-	for (ptr = q->next; ptr != q; ptr = ptr->next) 
-		c++;	
-	return c+1;	
-}	
 
 /* Preemptive MLFQ scheduling algorithm */
 static void sched_mlfq(void)
@@ -432,25 +425,19 @@ static void sched_mlfq(void)
 	// 4) if a task yields before TIMESLICE is done, it doesn't move
 	// 	4.1) else it moves down a layer
 
-	//Here check to see if running process used up its whole timeslice. if it did
-	//then move it down a layer
+	// Here check to see if running process used up its whole timeslice. if it did
+	// then move it down a layer
 	unsigned int i = scheduler->priority;
 	struct tcb_list *moving_tcb_list, *new_tcb_list;
 
-	for (i = 0; i < NUM_QS; i++) 
-		printf("QUEUE[%d] SIZE: %d\n", i, count_queue(scheduler->q[i]));
-	printf("----------------------------------------\n");
-
-	i = scheduler->priority;
-	if (i < NUM_QS - 1) {
-		moving_tcb_list = scheduler->q[i]->prev; 
-		if (moving_tcb_list->next == moving_tcb_list) {
+	if ((i < NUM_QS - 1) && time_elapsed) {
+		moving_tcb_list = scheduler->q[i]->prev;
+		if (moving_tcb_list->next == moving_tcb_list)
 			scheduler->q[i] = NULL;
-		} else {
+		else
 			list_del_curr(moving_tcb_list->prev, moving_tcb_list->next);
-			//scheduler->q[i] = scheduler->q[i]->next;
-		}
-		new_tcb_list = scheduler->q[i+1];	
+
+		new_tcb_list = scheduler->q[i+1];
 		if (new_tcb_list == NULL) {
 			scheduler->q[i+1] = moving_tcb_list;
 			moving_tcb_list->next = moving_tcb_list;
@@ -458,19 +445,18 @@ static void sched_mlfq(void)
 		} else {
 			list_add_prev(moving_tcb_list, scheduler->q[i+1], scheduler->q[i+1]->prev);
 		}
-		
-	}	
+
+	}
 
 	for (i = 0; i < NUM_QS; i++) {
 		if (scheduler->q[i]) {
 			scheduler->priority = i;
-			//printf("layer: %d\n", i);
 			if (sched_rr(&scheduler->q[i]) != -1)
 				return;
 		}
 	}
-
-	errx(0, "Empty ass queue %s", __FUNCTION__);
+	/* Should never be reached */
+	errx(-1, "%s: All threads were BLOCKED or STOPPED", __func__);
 }
 
 /* scheduler */
@@ -488,7 +474,6 @@ static void schedule(void)
 	// else if (sched == MLFQ)
 	// 		sched_mlfq();
 
-	/* Idek right now, too tired, just infinite loop */
 	for (;;) {
 #ifndef MLFQ
 		sched_rr(scheduler->q);
@@ -506,6 +491,8 @@ static void schedule(void)
 static void sched_preempt(int signum)
 {
 	disable_preempt();
+	/* If our alarm was called, we used our entire time slice */
+	time_elapsed = 1;
 	if (swapcontext(&scheduler->running->context, &scheduler->context) < 0) {
 		write(STDOUT_FILENO, "Preemption swap to scheduler failed.\n", 37);
 		exit(-1);
@@ -528,11 +515,11 @@ static void init_scheduler(void)
 	init_thread = malloc(sizeof(*init_thread));
 	sched_stack = malloc(SIGSTKSZ);
 	if (!init_thread || !scheduler || !sched_stack)
-		err(-1, "Error allocating memory during scheduler init");
+		err(-1, "%s: Error allocating memory", __func__);
 
 	if (getcontext(&init_thread->context) < 0 ||
 	    getcontext(&scheduler->context) < 0)
-		err(-1, "Error getting context while initialzing scheduler");
+		err(-1, "%s: Error getting context", __func__);
 
 	/* Set up our scheduler context */
 	scheduler->context.uc_link = NULL;
@@ -544,7 +531,7 @@ static void init_scheduler(void)
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = sched_preempt;
 	if (sigaction(SIGPROF, &sa, NULL) < 0)
-		err(-1, "Error setting sigaction");
+		err(-1, "%s: Error setting sigaction", __func__);
 
 	/* This thread should have tid of 0. Our "main" thread */
 	init_thread->id = open_tid++;
@@ -552,8 +539,7 @@ static void init_scheduler(void)
 	init_thread->join_list = NULL;
 	scheduler->running = init_thread;
 	scheduler->priority = 0;
-	//scheduler->num_qs = 1;
-	for (i = 0; i < NUM_QS; i++) 
+	for (i = 0; i < NUM_QS; i++)
 		scheduler->q[i] = NULL;
 	enqueue_job(init_thread, &scheduler->q[0]);
 }
