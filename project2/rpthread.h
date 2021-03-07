@@ -77,7 +77,6 @@ typedef struct rpthread_mutex_t {
 struct scheduler {
 	tcb *running;
 	struct tcb_list *q[NUM_QS];
-	//struct tcb_list *mlfq[NUM_QS];
 	ucontext_t context;
 	unsigned int priority;
 };
@@ -114,6 +113,7 @@ int rpthread_mutex_destroy(rpthread_mutex_t *mutex);
 #define pthread_t rpthread_t
 #define pthread_mutex_t rpthread_mutex_t
 #define pthread_create rpthread_create
+#define pthread_yield rpthread_yield
 #define pthread_exit rpthread_exit
 #define pthread_join rpthread_join
 #define pthread_mutex_init rpthread_mutex_init

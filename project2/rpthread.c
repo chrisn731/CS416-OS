@@ -414,6 +414,7 @@ static void sched_mlfq(void)
 	unsigned int i = scheduler->priority;
 	struct tcb_list *moving_tcb_list, *new_tcb_list;
 
+	/* Check if we gotta demote our thread */
 	if ((i < NUM_QS - 1) && time_elapsed) {
 		moving_tcb_list = scheduler->q[i]->prev;
 		if (moving_tcb_list->next == moving_tcb_list)
@@ -429,7 +430,6 @@ static void sched_mlfq(void)
 		} else {
 			list_add_prev(moving_tcb_list, scheduler->q[i+1], scheduler->q[i+1]->prev);
 		}
-
 	}
 
 	for (i = 0; i < NUM_QS; i++) {
