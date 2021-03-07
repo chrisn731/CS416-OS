@@ -390,11 +390,6 @@ static int sched_rr(struct tcb_list **q)
 {
 	tcb *next_thread, *running = scheduler->running;
 
-	/*
-	 * We should probably put finished threads in their own list to
-	 * stop our scheduler from considering them, but for now just keep them.
-	 */
-
 	/* If the our running became blocked, don't switch it's state */
 	if (running->status == SCHEDULED)
 		running->status = READY;
@@ -416,17 +411,6 @@ static int sched_rr(struct tcb_list **q)
 /* Preemptive MLFQ scheduling algorithm */
 static void sched_mlfq(void)
 {
-	// Your own implementation of MLFQ
-	// (feel free to modify arguments and return types)
-	//
-	// 1) 4 queues
-	// 2) run thru highest non-empty queue in RR
-	// 3) if a new task is put into the top queue, cycle back to the top queue after TIMESLICE
-	// 4) if a task yields before TIMESLICE is done, it doesn't move
-	// 	4.1) else it moves down a layer
-
-	// Here check to see if running process used up its whole timeslice. if it did
-	// then move it down a layer
 	unsigned int i = scheduler->priority;
 	struct tcb_list *moving_tcb_list, *new_tcb_list;
 
