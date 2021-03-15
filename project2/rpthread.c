@@ -12,13 +12,19 @@
 
 static struct scheduler *scheduler;
 static uint open_tid, open_mutid;
-static unsigned int time_elapsed;
+static volatile unsigned int time_elapsed;
 
 static void init_scheduler(void);
 static void disable_preempt(void);
 static void enable_preempt(void);
 static void enqueue_job(tcb *, struct tcb_list **);
 
+/*
+ * Thread kickoff function.
+ * Calls the supplied function for the thread to return and passes
+ * the return value to rpthread_exit, so that the return value can
+ * be picked up by any joining threads.
+ */
 static void startup_thread(void *(*func)(void *), void *arg)
 {
 	rpthread_exit(func(arg));
@@ -28,11 +34,9 @@ static void startup_thread(void *(*func)(void *), void *arg)
 int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 			void *(*function)(void*), void *arg)
 {
-	int errval = 0;
 	tcb *new_tcb;
 	void *new_stack;
 
-	/* We do not want to be disturbed while we are going through the motions */
 	if (!thread || !function)
 		return -1;
 	if (attr)
@@ -49,9 +53,8 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 		err(-1, "%s: Error allocating %zu bytes.",
 			__func__, !new_stack ? SIGSTKSZ : sizeof(*new_tcb));
 
-	errval = getcontext(&new_tcb->context);
-	if (errval) {
-		warnx("Error getting context for new thread");
+	if (getcontext(&new_tcb->context) < 0) {
+		warn("Error getting context for new thread");
 		free(new_tcb);
 		free(new_stack);
 		return -1;
@@ -76,11 +79,6 @@ int rpthread_create(rpthread_t *thread, pthread_attr_t *attr,
 /* give CPU possession to other user-level threads voluntarily */
 int rpthread_yield(void)
 {
-	/*
-	 * change thread state from Running to Ready
-	 * save context of this thread to its thread control block
-	 * switch from thread context to scheduler context
-	 */
 	disable_preempt();
 	return swapcontext(&scheduler->running->context, &scheduler->context);
 }
@@ -161,7 +159,7 @@ int rpthread_join(rpthread_t thread, void **value_ptr)
 		return -1;
 	/*
 	 * It's possible the thread we are waiting for has stopped already.
-	 * If it hasn't stopped, block and wait on it. Otherwise, return.
+	 * If it hasn't stopped, block and wait on it. Otherwise, grab rval.
 	 */
 	if (join_thread->status != STOPPED) {
 		disable_preempt();
@@ -169,7 +167,6 @@ int rpthread_join(rpthread_t thread, void **value_ptr)
 		call_thread->status = BLOCKED;
 		swapcontext(&call_thread->context, &scheduler->context);
 	}
-	/* Grab the return value and free all memory */
 	if (value_ptr)
 		*value_ptr = join_thread->rval;
 	join_thread->status = JOINED;
@@ -263,7 +260,7 @@ int rpthread_mutex_unlock(rpthread_mutex_t *mutex)
 {
 	sigset_t x;
 
-	if (mutex->owner != scheduler->running)
+	if (!mutex || mutex->owner != scheduler->running)
 		return -1;
 	/*
 	 * We do not want to be preeempted while we are setting other
@@ -350,7 +347,7 @@ static tcb *dequeue_job(struct tcb_list **q)
 	struct tcb_list *head = *cursor;
 	tcb *job;
 
-	/* There should be at no point where our queue is empty. */
+	/* The caller should ensure that *q has valid jobs */
 	if (!*cursor)
 		exit(-1);
 	while ((*cursor)->thread->status != READY) {
@@ -375,9 +372,8 @@ static tcb *dequeue_job(struct tcb_list **q)
 			*cursor = (*cursor)->next;
 		}
 
-		if (head == *cursor) {
+		if (head == *cursor)
 			return NULL;
-		}
 	}
 	job = (*cursor)->thread;
 	*cursor = (*cursor)->next;
@@ -393,7 +389,12 @@ static int sched_rr(struct tcb_list **q)
 	if (running->status == SCHEDULED)
 		running->status = READY;
 
-	//make sure next thread returned isnt null
+	/*
+	 * If dequeue_job() returns NULL, there were no jobs in that queue
+	 * ready to be scheduled. If our scheduler is MLFQ, then we just
+	 * hand control back to that function for another queue. If we are
+	 * running a RR scheduler, we are in deadlock.
+	 */
 	next_thread = dequeue_job(q);
 	if (!next_thread)
 		return -1;
@@ -401,9 +402,10 @@ static int sched_rr(struct tcb_list **q)
 	scheduler->running = next_thread;
 	time_elapsed = 0;
 	enable_preempt();
-	if (swapcontext(&scheduler->context, &next_thread->context) < 0)
-		write(STDOUT_FILENO, "Error swapping context!\n",
-				sizeof("Error swapping context!\n") - 1);
+	if (swapcontext(&scheduler->context, &next_thread->context) < 0) {
+		write(STDOUT_FILENO, "Error swapping context!\n", 24);
+		exit(-1);
+	}
 	return 0;
 }
 
@@ -413,14 +415,16 @@ static void sched_mlfq(void)
 	unsigned int i = scheduler->priority;
 	struct tcb_list *moving_tcb_list, *new_tcb_list;
 
-	/* Check if we gotta demote our thread */
+	/* Check if we have to demote our thread */
 	if ((i < NUM_QS - 1) && time_elapsed) {
+		/* Remove the job from the queue */
 		moving_tcb_list = scheduler->q[i]->prev;
 		if (moving_tcb_list->next == moving_tcb_list)
 			scheduler->q[i] = NULL;
 		else
 			list_del_curr(moving_tcb_list->prev, moving_tcb_list->next);
 
+		/* Put it one level down */
 		new_tcb_list = scheduler->q[i+1];
 		if (new_tcb_list == NULL) {
 			scheduler->q[i+1] = moving_tcb_list;
