@@ -286,8 +286,7 @@ int rpthread_mutex_unlock(rpthread_mutex_t *mutex)
 /* destroy the mutex */
 int rpthread_mutex_destroy(rpthread_mutex_t *mutex)
 {
-	if (mutex->owner)
-		return -1;
+	mutex->owner = NULL;
 	release_wait_list(mutex->wait_list);
 	return 0;
 }
