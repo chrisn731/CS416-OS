@@ -52,7 +52,6 @@ typedef uint rpthread_t;
 struct tcb_list;
 
 typedef struct threadControlBlock {
-	/* Probably need to add a priority field in here for MLFQ */
 	struct tcb_list *join_list;
 	void *rval;
 	ucontext_t context;
@@ -80,9 +79,6 @@ struct scheduler {
 	ucontext_t context;
 	unsigned int priority;
 };
-
-
-/* Function Declarations: */
 
 /* create a new thread */
 int rpthread_create(rpthread_t * thread, pthread_attr_t * attr,
