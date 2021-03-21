@@ -237,7 +237,7 @@ int rpthread_mutex_lock(rpthread_mutex_t *mutex)
 	 * to be smart and try and save one copy of the owner. We want to grab it
 	 * every time.
 	 */
-	while ((volatile tcb *) mutex->owner) {
+	while ((tcb *volatile) mutex->owner) {
 		struct tcb_list *waiting_thread;
 
 		disable_preempt();
@@ -283,8 +283,11 @@ int rpthread_mutex_unlock(rpthread_mutex_t *mutex)
 /* destroy the mutex */
 int rpthread_mutex_destroy(rpthread_mutex_t *mutex)
 {
+	if (!mutex)
+		return -1;
+	if (mutex->owner)
+		release_wait_list(mutex->wait_list);
 	mutex->owner = NULL;
-	release_wait_list(mutex->wait_list);
 	return 0;
 }
 
@@ -413,10 +416,10 @@ static int sched_rr(struct tcb_list **q)
 static void sched_mlfq(void)
 {
 	unsigned int i = scheduler->priority;
-	struct tcb_list *moving_tcb_list, *new_tcb_list;
+	struct tcb_list *moving_tcb_list;
 
 	/* Check if we have to demote our thread */
-	if ((i < NUM_QS - 1) && time_elapsed) {
+	if (time_elapsed && i < NUM_QS - 1) {
 		/* Remove the job from the queue */
 		moving_tcb_list = scheduler->q[i]->prev;
 		if (moving_tcb_list->next == moving_tcb_list)
@@ -425,8 +428,7 @@ static void sched_mlfq(void)
 			list_del_curr(moving_tcb_list->prev, moving_tcb_list->next);
 
 		/* Put it one level down */
-		new_tcb_list = scheduler->q[i+1];
-		if (new_tcb_list == NULL) {
+		if (!scheduler->q[i+1]) {
 			scheduler->q[i+1] = moving_tcb_list;
 			moving_tcb_list->next = moving_tcb_list;
 			moving_tcb_list->prev = moving_tcb_list;
@@ -449,18 +451,6 @@ static void sched_mlfq(void)
 /* scheduler */
 static void schedule(void)
 {
-	// Every time when timer interrup happens, your thread library
-	// should be contexted switched from thread context to this
-	// schedule function
-
-	// Invoke different actual scheduling algorithms
-	// according to policy (RR or MLFQ)
-
-	// if (sched == RR)
-	//		sched_rr();
-	// else if (sched == MLFQ)
-	// 		sched_mlfq();
-
 	for (;;) {
 #ifndef MLFQ
 		sched_rr(scheduler->q);
