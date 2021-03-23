@@ -17,8 +17,7 @@ void set_physical_mem(void)
  * Part 2: Add a virtual to physical page translation to the TLB.
  * Feel free to extend the function arguments or return type.
  */
-int
-add_TLB(void *va, void *pa)
+int add_TLB(void *va, void *pa)
 {
 	/* Part 2 HINT: Add a virtual to physical page translation to the TLB */
 
@@ -31,8 +30,7 @@ add_TLB(void *va, void *pa)
  * Returns the physical page address.
  * Feel free to extend this function and change the return type.
  */
-pte_t *
-check_TLB(void *va)
+pte_t *check_TLB(void *va)
 {
 	/* Part 2: TLB lookup code here */
 }
@@ -42,8 +40,7 @@ check_TLB(void *va)
  * Part 2: Print TLB miss rate.
  * Feel free to extend the function arguments or return type.
  */
-void
-print_TLB_missrate(void)
+void print_TLB_missrate(void)
 {
 	double miss_rate = 0;
 
@@ -69,8 +66,7 @@ pte_t *translate(pde_t *pgdir, void *va)
 	 * translation exists, then you can return physical address from the TLB.
 	 */
 
-
-	//If translation not successfull
+	/* If translation not successfull */
 	return NULL;
 }
 
@@ -81,8 +77,7 @@ pte_t *translate(pde_t *pgdir, void *va)
  * directory to see if there is an existing mapping for a virtual address. If the
  * virtual address is not present, then a new entry will be added
  */
-int
-page_map(pde_t *pgdir, void *va, void *pa)
+int page_map(pde_t *pgdir, void *va, void *pa)
 {
 	/*
 	 * HINT: Similar to translate(), find the page directory (1st level)
@@ -97,7 +92,7 @@ page_map(pde_t *pgdir, void *va, void *pa)
 /* Function that gets the next available page */
 void *get_next_avail(int num_pages)
 {
-    /* Use virtual address bitmap to find the next free page */
+	/* Use virtual address bitmap to find the next free page */
 }
 
 
