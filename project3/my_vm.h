@@ -4,10 +4,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-//Assume the address space is 32 bits, so the max memory size is 4GB
-//Page size is 4KB
+/*
+ * Assume the address space is 32 bits, so the max memory size is 4GB
+ * Page size is 4KB
+ */
 
-//Add any important includes here which you may need
+/* Add any important includes here which you may need */
 
 #define PGSIZE 4096
 
@@ -27,16 +29,15 @@ typedef unsigned long pde_t;
 
 //Structure to represents TLB
 struct tlb {
-    /*Assume your TLB is a direct mapped TLB with number of entries as TLB_ENTRIES
-    * Think about the size of each TLB entry that performs virtual to physical
-    * address translation.
-    */
-
+	/*
+	 * Assume your TLB is a direct mapped TLB with number of entries as TLB_ENTRIES
+	 * Think about the size of each TLB entry that performs virtual to physical
+	 * address translation.
+	 */
 };
 struct tlb tlb_store;
 
-
-void set_physical_mem();
+void set_physical_mem(void);
 pte_t* translate(pde_t *pgdir, void *va);
 int page_map(pde_t *pgdir, void *va, void* pa);
 bool check_in_tlb(void *va);
@@ -46,6 +47,6 @@ void a_free(void *va, int size);
 void put_value(void *va, void *val, int size);
 void get_value(void *va, void *val, int size);
 void mat_mult(void *mat1, void *mat2, int size, void *answer);
-void print_TLB_missrate();
+void print_TLB_missrate(void);
 
 #endif
