@@ -35,10 +35,37 @@ increment a shared global variable to an inputted amount.<br/>
 E.g. ./threads 10 will increment a global variable to 10 then exit.
 
 ## Project 2 - User Level Thread Library
+A simple thread library implemented at the user level using two different types
+of queues.
 
+### Round Robin
+Round robin holds a pointer to a current task and simply goes around a list
+picking up the next task to run.
+```
+            task_1<----task_4
+               |         ^
+               |         |
+               v         |
+running---> task_2---->task_3
+```
 
+### Multi-Level Feedback Queue
+MLFQ uses multiple queues within an array. The lower the value of the queue number
+the higher the priority of the task, and they are run first. If there are multiple
+tasks in a queue to be run, they run in round robin. Once they stop or become
+blocked, the queue goes to lower levels and runs those tasks.
+```
++------------------+
+|                  |
+|1->task_1         |
+|                  |
+|2->task_2->task_3 |
+|                  |
+|3->               |
+|                  |
+|4->task_4         |
+|                  |
++------------------+
+```
 
-
-
-
-
+## Project 3 - User Level Memory Management
