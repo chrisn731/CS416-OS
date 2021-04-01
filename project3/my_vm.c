@@ -7,23 +7,35 @@
 
 #define ADDR_BITS 32
 
-#define NUM_PAGES (MEMSIZE / PGSIZE)
 #define log_2(num) (log(num) / log(2))
 
 #define top_bits(x, num) ((x) >> (32 - num))
 #define mid_bits(x, num_mid, num_lower) ((x >> (num_lower)) & ((1UL << (num_mid)) - 1))
 #define low_bits(x, num) (((1UL << num) - 1) & (x))
 
+#define map_set_bit(map, index) \
+	(((char *) map)[(index) / 8] |= (1UL << ((index) % 8)))
+
+#define map_clear_bit(map, index) \
+	(((char *) map)[(index) / 8] &= ~(1UL << ((index) % 8)))
+
+#define map_get_bit(map, index) \
+	(((char *) map)[(index) / 8] & (1UL << ((index) % 8)))
+
 #define set_bit(x, num) ((x) |= (1UL << (num)))
 #define clear_bit(x, num) ((x) &= ~(1UL << (num)))
 
 #define valid_bit_set(x) ((x) & 0x80000000)
 #define set_valid_bit(x) (set_bit(x, 31))
+#define clear_valid_bit(x) (clear_bit(x, 31))
 
 #define free_bit_set(x) ((x) & 0x40000000)
 #define set_free_bit(x) (set_bit(x, 30))
+#define clear_free_bit(x) (clear_bit(x, 30))
 
 static struct tlb tlb_store;
+
+static unsigned long total_pages;
 
 static unsigned long phys_mem_size;
 static void *phys_mem;
@@ -34,37 +46,24 @@ static unsigned int page_dir_bits;
 static unsigned int page_table_bits;
 static unsigned int phys_page_bits;
 
+/* Idk about this for rn, prob needs to be changed */
 static unsigned int next_page;
+
+static unsigned char *alloc_map;
 
 static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 
 static void free_phys_mem(void)
 {
 	munmap(phys_mem, phys_mem_size);
-}
-
-static void init_page_directory(void)
-{
-	pte_t *first_table;
-	unsigned int i, entries = PGSIZE / sizeof(pte_t);
-	page_dir = phys_mem;
-
-	/* We allocate the first page table for the directory to use. */
-	*page_dir = 1;
-	first_table = (pte_t *) (((char *) phys_mem) + (1 * PGSIZE));
-
-	for (i = 0; i < entries; i++) {
-		set_valid_bit(first_table[i]);
-		set_free_bit(first_table[i]);
-		/* First 2 pages go to directory and first table */
-		first_table[i] += i + 2;
-	}
-	set_valid_bit(*page_dir);
+	free(alloc_map);
 }
 
 /* Function responsible for allocating and setting your physical memory */
 void set_physical_mem(void)
 {
+	unsigned long phys_map_size;
+
 	/*
 	 * Allocate physical memory using mmap or malloc; this is the total size of
 	 * your memory you are simulating
@@ -78,15 +77,30 @@ void set_physical_mem(void)
 	if (phys_mem == MAP_FAILED)
 		err(-1, "%s: Error allocating %lu bytes for physical memory",
 				__func__, phys_mem_size);
+	page_dir = phys_mem;
 
-	/* memset(phys_mem, 0, phys_mem_size); */
 	off_bits = (unsigned int) log_2(PGSIZE);
 	page_table_bits = (unsigned int) log_2(PGSIZE / sizeof(pte_t));
 	page_dir_bits = ADDR_BITS - page_table_bits - off_bits;
-	/* How many bits we use to address the physical pages */
-	phys_page_bits = log_2(NUM_PAGES);
 
-	init_page_directory();
+	/* How many bits we use to address the physical pages */
+	phys_page_bits = page_table_bits + page_dir_bits;
+	total_pages = phys_mem_size / PGSIZE;
+
+	/*
+	 * The size of the bit map will be:
+	 * 2^(page_table_bits + page_dir_bits) / (# bits in char)
+	 * # bits in char = 2^3
+	 */
+	phys_map_size = (1UL << (page_table_bits + page_dir_bits)) >> 3;
+	alloc_map = malloc(phys_map_size);
+	if (!alloc_map)
+		err(-1, "%s: Error allocating %lu bytes for bitmap",
+				__func__, phys_map_size);
+	memset(alloc_map, 0, phys_map_size);
+
+	/* We use page 0 as our directory */
+	map_set_bit(alloc_map, 0);
 
 	/* Free our physical memory when our application finishes */
 	if (atexit(&free_phys_mem) != 0)
@@ -168,15 +182,19 @@ pte_t *translate(pde_t *pgdir, void *va)
 	 * of our page table.
 	 */
 	dir_entry = pgdir[dir_index];
-	if (!dir_entry)
+	if (!dir_entry) {
+		printf("%s: No directory entry for 0x%x", __func__, va);
 		return NULL;
+	}
 	table_num = low_bits(dir_entry, phys_page_bits);
 
 	/* Go to the relevant page table, and retrieve the page table entry. */
 	page_table = (pte_t *) ((char *) phys_mem + table_num * PGSIZE);
 	table_entry = page_table[table_index];
-	if (!table_entry || !valid_bit_set(table_entry))
+	if (!table_entry) {
+		printf("%s: No table entry for 0x%x", __func__, va);
 		return NULL;
+	}
 	page_num = low_bits(table_entry, phys_page_bits);
 
 	/*
@@ -188,6 +206,18 @@ pte_t *translate(pde_t *pgdir, void *va)
 	return (pte_t *) addr;
 }
 
+static pde_t alloc_new_table(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < total_pages; i++) {
+		if (!map_get_bit(alloc_map, i)) {
+			map_set_bit(alloc_map, i);
+			return i;
+		}
+	}
+	return 0;
+}
 
 /*
  * The function takes a page directory address, virtual address, physical address
@@ -214,21 +244,23 @@ int page_map(pde_t *pgdir, void *va, void *pa)
 
 	dir_entry = pgdir[dir_index];
 	if (!dir_entry) {
-		/* Need to map a new table for our directory. */
-		pgdir[dir_index] = next_page++;
+		/* We are mapping to a new table */
+		dir_entry = alloc_new_table();
+		map_set_bit(alloc_map, dir_entry);
+		printf("Allocating new page table at ppn: %d\n", dir_entry);
+		pgdir[dir_index] = dir_entry;
 	}
 	table_num = low_bits(dir_entry, phys_page_bits);
 
 	page_table = (pte_t *) ((char *) phys_mem + table_num * PGSIZE);
 	table_entry = page_table[table_index];
-	if (!table_entry || !valid_bit_set(table_entry)) {
+	if (!table_entry) {
 		/* If there is no entry or non valid, we need to map it. */
 		pte_t new_entry;
 		unsigned long page_num;
 
 		page_num = ((pte_t) pa - (pte_t) phys_mem) / PGSIZE;
 		new_entry = page_num;
-		set_valid_bit(new_entry);
 		page_table[table_index] = new_entry;
 		return 0;
 	}
@@ -239,56 +271,39 @@ int page_map(pde_t *pgdir, void *va, void *pa)
 /* Function that gets the next available page */
 void *get_next_avail(int num_pages)
 {
-	void *free_page = NULL;
-	unsigned int dir_index, table_index, entries_on_page;
-	/* Use virtual address bitmap to find the next free page */
+	unsigned int i, free_page = 0, available_pages = 0;
 
-	entries_on_page = NUM_PAGES / sizeof(pte_t);
-
-	/* For each entry within the directory... */
-	for (dir_index = 0; dir_index < entries_on_page; dir_index++) {
-		pde_t dir_entry = page_dir[dir_index];
-		pte_t *table;
-		unsigned int available_pages = 0;
-
-		if (!dir_entry) {
-			/* Allocate a new page */
-			page_dir[dir_index] = next_page++;
-		}
-
-		table = (pte_t *) (((char *) phys_mem) + dir_entry * PGSIZE);
-		/* For each entry within the table */
-		for (table_index = 0; table_index < entries_on_page; table_index++) {
-			/*
-			 * We need to find (num_pages) consecutive entries
-			 * so that if we allocate more than one page, the user
-			 * refers to the correct pages.
-			 */
-			if (valid_bit_set(table[table_index])) {
-				if (!free_page)
-					free_page = &table[table_index];
-				available_pages++;
-			} else {
-
-				available_pages = 0;
-				free_page = NULL;
-			}
-
+	for (i = 0; i < total_pages; i++) {
+		if (!map_get_bit(alloc_map, i)) {
+			if (!free_page)
+				free_page = i;
+			available_pages++;
 			if (available_pages == num_pages)
-				goto found;
-
+				break;
+		} else {
+			free_page = 0;
+			available_pages = 0;
 		}
 	}
-found:
-	return free_page;
+	return (void *) free_page;
 }
 
+static unsigned long create_virt_addr(unsigned long ppn)
+{
+	unsigned long new_va, entries_per_page;
+
+	entries_per_page = 1 << page_table_bits;
+	new_va = (ppn / entries_per_page) << page_table_bits;
+	new_va |= ppn % entries_per_page;
+	new_va <<= off_bits;
+	return new_va;
+}
 
 /* Function responsible for allocating pages and used by the benchmark */
 void *a_malloc(unsigned int num_bytes)
 {
 	static int initialized;
-	void *free_pages;
+	unsigned long page_num, va = 0;
 	unsigned int num_pages, i;
 
 	if (!num_bytes)
@@ -308,12 +323,24 @@ void *a_malloc(unsigned int num_bytes)
 	if (num_bytes % PGSIZE)
 		num_pages++;
 
-	free_pages = get_next_avail(num_pages);
-	if (!free_pages)
+	page_num = (unsigned long) get_next_avail(num_pages);
+	if (!page_num)
 		goto malloc_fail_unlock;
+	for (i = 0; i < num_pages; i++)
+		map_set_bit(alloc_map, page_num + i);
 
-	for (i = 0; i < num_pages; i++) {
+	printf("Allocating %d page(s) starting at ppn: %d\n", num_pages, page_num);
 
+	va = create_virt_addr(page_num);
+	page_map(page_dir, (void *) va, phys_mem + (page_num * PGSIZE));
+	/* map_set_bit(free_map, page_num) */
+
+	/* Allocate extra pages if we need to */
+	for (i = 1; i < num_pages; i++) {
+		unsigned long extra_pages = create_virt_addr(++page_num);
+
+		printf("Extra ppn: %d\n", num_pages, page_num);
+		page_map(page_dir, (void *) extra_pages, phys_mem + (page_num * PGSIZE));
 	}
 
 	/*
@@ -326,7 +353,7 @@ void *a_malloc(unsigned int num_bytes)
 malloc_fail_unlock:
 	pthread_mutex_unlock(&mut);
 malloc_fail:
-	return NULL;
+	return (void *) va;
 }
 
 /*
@@ -365,11 +392,14 @@ void put_value(void *va, void *val, int size)
 		return;
 
 	for (i = 0; i < size; i++) {
-		phys_addr = (char *) translate(NULL, va);
-		if (!phys_addr)
+		phys_addr = (char *) translate(page_dir, va);
+		if (!phys_addr) {
+			printf("%s: Address translation failed!\n", __func__);
 			return;
+		}
+		printf("%s: %p\n", __func__, phys_addr);
 		*phys_addr = *val_ptr++;
-		(char *) va += 1;
+		va = (char *) va + 1;
 	}
 }
 
@@ -389,9 +419,10 @@ void get_value(void *va, void *val, int size)
 	if (!va || !val || !size)
 		return;
 
-	phys_addr = (char *) translate(NULL, va);
+	phys_addr = (char *) translate(page_dir, va);
 	if (!phys_addr)
 		return;
+	printf("%s: %p\n", __func__, phys_addr);
 
 	for (i = 0; i < size; i++)
 		*val_ptr++ = *phys_addr++;

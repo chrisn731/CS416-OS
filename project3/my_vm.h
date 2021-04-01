@@ -39,7 +39,6 @@ struct tlb {
 		bool valid;
 	} entries[TLB_ENTRIES];
 };
-struct tlb tlb_store;
 
 void set_physical_mem(void);
 pte_t* translate(pde_t *pgdir, void *va);
