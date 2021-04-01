@@ -46,9 +46,6 @@ static unsigned int page_dir_bits;
 static unsigned int page_table_bits;
 static unsigned int phys_page_bits;
 
-/* Idk about this for rn, prob needs to be changed */
-static unsigned int next_page;
-
 static unsigned char *alloc_map;
 
 static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
@@ -183,7 +180,7 @@ pte_t *translate(pde_t *pgdir, void *va)
 	 */
 	dir_entry = pgdir[dir_index];
 	if (!dir_entry) {
-		printf("%s: No directory entry for 0x%x", __func__, va);
+		printf("%s: No directory entry for 0x%p", __func__, va);
 		return NULL;
 	}
 	table_num = low_bits(dir_entry, phys_page_bits);
@@ -192,7 +189,7 @@ pte_t *translate(pde_t *pgdir, void *va)
 	page_table = (pte_t *) ((char *) phys_mem + table_num * PGSIZE);
 	table_entry = page_table[table_index];
 	if (!table_entry) {
-		printf("%s: No table entry for 0x%x", __func__, va);
+		printf("%s: No table entry for 0x%p", __func__, va);
 		return NULL;
 	}
 	page_num = low_bits(table_entry, phys_page_bits);
@@ -247,7 +244,7 @@ int page_map(pde_t *pgdir, void *va, void *pa)
 		/* We are mapping to a new table */
 		dir_entry = alloc_new_table();
 		map_set_bit(alloc_map, dir_entry);
-		printf("Allocating new page table at ppn: %d\n", dir_entry);
+		printf("Allocating new page table at ppn: %lu\n", dir_entry);
 		pgdir[dir_index] = dir_entry;
 	}
 	table_num = low_bits(dir_entry, phys_page_bits);
@@ -329,18 +326,18 @@ void *a_malloc(unsigned int num_bytes)
 	for (i = 0; i < num_pages; i++)
 		map_set_bit(alloc_map, page_num + i);
 
-	printf("Allocating %d page(s) starting at ppn: %d\n", num_pages, page_num);
+	printf("Allocating %u page(s) starting at ppn: %lu\n", num_pages, page_num);
 
 	va = create_virt_addr(page_num);
-	page_map(page_dir, (void *) va, phys_mem + (page_num * PGSIZE));
+	page_map(page_dir, (void *) va, (char *) phys_mem + (page_num * PGSIZE));
 	/* map_set_bit(free_map, page_num) */
 
 	/* Allocate extra pages if we need to */
 	for (i = 1; i < num_pages; i++) {
 		unsigned long extra_pages = create_virt_addr(++page_num);
 
-		printf("Extra ppn: %d\n", num_pages, page_num);
-		page_map(page_dir, (void *) extra_pages, phys_mem + (page_num * PGSIZE));
+		printf("Extra ppn: %lu\n", page_num);
+		page_map(page_dir, (void *) extra_pages, (char *) phys_mem + (page_num * PGSIZE));
 	}
 
 	/*
