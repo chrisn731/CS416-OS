@@ -205,7 +205,7 @@ pte_t *translate(pde_t *pgdir, void *va)
 
 static pde_t alloc_new_table(void)
 {
-	unsigned int i;
+	unsigned long i;
 
 	for (i = 0; i < total_pages; i++) {
 		if (!map_get_bit(alloc_map, i)) {
@@ -259,9 +259,8 @@ int page_map(pde_t *pgdir, void *va, void *pa)
 		page_num = ((pte_t) pa - (pte_t) phys_mem) / PGSIZE;
 		new_entry = page_num;
 		page_table[table_index] = new_entry;
-		return 0;
 	}
-	return -1;
+	return 0;
 }
 
 
@@ -276,13 +275,13 @@ void *get_next_avail(int num_pages)
 				free_page = i;
 			available_pages++;
 			if (available_pages == num_pages)
-				break;
+				return (void *) free_page;
 		} else {
 			free_page = 0;
 			available_pages = 0;
 		}
 	}
-	return (void *) free_page;
+	return 0;
 }
 
 static unsigned long create_virt_addr(unsigned long ppn)
@@ -295,6 +294,20 @@ static unsigned long create_virt_addr(unsigned long ppn)
 	new_va <<= off_bits;
 	return new_va;
 }
+
+
+static void *__create_virt_addr(unsigned long ppn)
+{
+	unsigned long new_va, entries_on_dir, entries_on_table;
+
+	entries_on_dir = 1 << page_dir_bits;
+	entries_on_table = 1 << page_table_bits;
+	new_va = (ppn / entries_on_dir) << page_table_bits;
+	new_va |= ppn % entries_on_table;
+	new_va <<= off_bits;
+	return (void *) new_va;
+}
+#define create_virt_addr(x) __create_virt_addr(x)
 
 /* Function responsible for allocating pages and used by the benchmark */
 void *a_malloc(unsigned int num_bytes)
@@ -359,6 +372,8 @@ malloc_fail:
  */
 void a_free(void *va, int size)
 {
+	unsigned long i, num_to_free, phys_addr, ppn;
+
 	/*
 	 * Part 1: Free the page table entries starting from this virtual address
 	 * (va). Also mark the pages free in the bitmap. Perform free only if the
@@ -366,8 +381,25 @@ void a_free(void *va, int size)
 	 *
 	 * Part 2: Also, remove the translation from the TLB
 	 */
-	if (!va || !size)
+	if (!va || size <= 0)
 		return;
+
+	num_to_free = size / PGSIZE;
+	if (size % PGSIZE)
+		num_to_free++;
+
+	phys_addr = (unsigned long) translate(page_dir, va);
+	if (!phys_addr)
+		return;
+
+	ppn = (phys_addr - (unsigned long) phys_mem) / PGSIZE;
+	pthread_mutex_lock(&mut);
+	for (i = 0; i < num_to_free; i++, ppn++) {
+		if (!map_get_bit(alloc_map, ppn))
+			break;
+		map_clear_bit(alloc_map, ppn);
+	}
+	pthread_mutex_unlock(&mut);
 }
 
 
