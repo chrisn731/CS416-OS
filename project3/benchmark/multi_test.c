@@ -1,5 +1,6 @@
 #include "../my_vm.h"
 #include <time.h>
+#include <pthread.h>
 #define num_threads 15
 #define SIZE 5
 
@@ -20,7 +21,7 @@ void *put_mem(void *id_arg) {
     for (int i = 0; i < SIZE; i++) {
         for (int j = 0; j < SIZE; j++) {
             int address_a = (unsigned int)va_pointer + ((i * 5 * sizeof(int))) + (j * sizeof(int));
-            put_val((void *)address_a, &val, sizeof(int));
+            put_value((void *)address_a, &val, sizeof(int));
         }
     }
     return NULL;
@@ -75,7 +76,7 @@ int main() {
     for (int i = 0; i < SIZE; i++) {
         for (int j = 0; j < SIZE; j++) {
             int address_a = (unsigned int)a + ((i * SIZE * sizeof(int))) + (j * sizeof(int));
-            get_val((void *)address_a, &val, sizeof(int));
+            get_value((void *)address_a, &val, sizeof(int));
             printf("%d ", val);
         }
         printf("\n");
@@ -96,7 +97,7 @@ int main() {
     for (int i = 0; i < SIZE; i++) {
         for (int j = 0; j < SIZE; j++) {
             int address_a = (unsigned int)a + ((i * SIZE * sizeof(int))) + (j * sizeof(int));
-            get_val((void *)address_a, &val, sizeof(int));
+            get_value((void *)address_a, &val, sizeof(int));
             printf("%d ", val);
         }
         printf("\n");
