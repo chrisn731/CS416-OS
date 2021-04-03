@@ -51,7 +51,7 @@ int main() {
     for (int i = 0; i < num_threads; i++)
         pthread_create(&threads[i], NULL, alloc_mem, (void *)&ids[i]);
 
-    for (int i = num_threads; i >= 0; i--)
+    for (int i = num_threads - 1; i >= 0; i--)
         pthread_join(threads[i], NULL);
 
     printf("Allocated Pointers: \n");
@@ -65,7 +65,7 @@ int main() {
     for (int i = 0; i < num_threads; i++)
         pthread_create(&threads[i], NULL, put_mem, (void *)&ids[i]);
 
-    for (int i = num_threads; i >= 0; i--)
+    for (int i = num_threads - 1; i >= 0; i--)
         pthread_join(threads[i], NULL);
 
     printf("Randomly checking a thread allocation to see if everything worked correctly!\n");
@@ -110,7 +110,7 @@ int main() {
     for (int i = 0; i < num_threads; i++)
         pthread_create(&threads[i], NULL, free_mem, (void *)&ids[i]);
 
-    for (int i = num_threads; i >= 0; i--)
+    for (int i = num_threads - 1; i >= 0; i--)
         pthread_join(threads[i], NULL);
 
     void *temp = (void *)1;

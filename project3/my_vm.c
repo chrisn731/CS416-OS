@@ -349,13 +349,11 @@ void *a_malloc(unsigned int num_bytes)
 
 	va = create_virt_addr(page_num);
 	page_map(page_dir, (void *) va, (char *) phys_mem + (page_num * PGSIZE));
-	/* map_set_bit(free_map, page_num) */
 
 	/* Allocate extra pages if we need to */
 	for (i = 1; i < num_pages; i++) {
 		unsigned long extra_pages = create_virt_addr(++page_num);
 
-		//printf("Extra ppn: %lu\n", page_num);
 		page_map(page_dir, (void *) extra_pages, (char *) phys_mem + (page_num * PGSIZE));
 	}
 
@@ -482,19 +480,19 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer)
 	int i, k, j = 0;
 	int num1, num2, total;
 	unsigned int addr_mat1, addr_mat2, addr_ans;
-	if (!mat1 || !mat2)
+	if (!mat1 || !mat2 || !answer || size <= 0)
 		return;
 	for (i = 0; i < size; i++) {
 		for (j = 0; j < size; j++) {
 			total = 0;
-			//answer[i][j] += mat1[i][k] * mat2[k][j]
+			/* answer[i][j] += mat1[i][k] * mat2[k][j] */
 			for (k = 0; k < size; k++) {
 				addr_mat1 = (unsigned int)mat1 + (i * size * sizeof(int)) + (k * sizeof(int));
 				addr_mat2 = (unsigned int)mat2 + (k * size * sizeof(int)) + (j * sizeof(int));
 				get_value((void *)addr_mat1, &num1, sizeof(int));
 				get_value((void *)addr_mat2, &num2, sizeof(int));
 				total += num1 * num2;
-			}	
+			}
 			addr_ans = (unsigned int)answer + (i * size * sizeof(int)) + (j * sizeof(int));
 			put_value((void*)addr_ans, &total, sizeof(int));
 		}
