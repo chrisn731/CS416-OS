@@ -114,11 +114,16 @@ void set_physical_mem(void)
 int add_TLB(void *va, void *pa)
 {
 	/* Part 2 HINT: Add a virtual to physical page translation to the TLB */
-
-	return -1;
+	//va % numentires
+	unsigned long i = (unsigned long)va % TLB_ENTRIES;
+	tlb_store.entries[i].virt_addr = va;
+	tlb_store.entries[i].page_number = pa;
+	tlb_store.entries[i].valid = true;
+	return 0;
 }
 
-
+static unsigned int tlb_misses;
+static unsigned int tlb_lookups;
 /*
  * Part 2: Check TLB for a valid translation.
  * Returns the physical page address.
@@ -126,10 +131,13 @@ int add_TLB(void *va, void *pa)
  */
 pte_t *check_TLB(void *va)
 {
-	/* Part 2: TLB lookup code here */
+	unsigned long i = (unsigned long)va % TLB_ENTRIES;
+	tlb_lookups++;
+	if (tlb_store.entries[i].valid)
+		return tlb_store.entries[i].page_number;
+	tlb_misses++;
 	return NULL;
 }
-
 
 /*
  * Part 2: Print TLB miss rate.
@@ -137,11 +145,9 @@ pte_t *check_TLB(void *va)
  */
 void print_TLB_missrate(void)
 {
-	double miss_rate = 0;
+	double miss_rate = (double)tlb_misses / tlb_lookups;
 
-	/* Part 2 Code here to calculate and print the TLB miss rate */
-
-	fprintf(stderr, "TLB miss rate %lf \n", miss_rate);
+	fprintf(stderr, "TLB miss rate %lf\n", miss_rate);
 }
 
 /*
@@ -349,7 +355,7 @@ void *a_malloc(unsigned int num_bytes)
 	for (i = 1; i < num_pages; i++) {
 		unsigned long extra_pages = create_virt_addr(++page_num);
 
-		printf("Extra ppn: %lu\n", page_num);
+		//printf("Extra ppn: %lu\n", page_num);
 		page_map(page_dir, (void *) extra_pages, (char *) phys_mem + (page_num * PGSIZE));
 	}
 
@@ -426,7 +432,7 @@ void put_value(void *va, void *val, int size)
 			printf("%s: Address translation failed!\n", __func__);
 			return;
 		}
-		printf("%s: %p\n", __func__, phys_addr);
+		//printf("%s: %p\n", __func__, phys_addr);
 		*phys_addr = *val_ptr++;
 		va = (char *) va + 1;
 	}
@@ -451,7 +457,7 @@ void get_value(void *va, void *val, int size)
 	phys_addr = (char *) translate(page_dir, va);
 	if (!phys_addr)
 		return;
-	printf("%s: %p\n", __func__, phys_addr);
+	//printf("%s: %p\n", __func__, phys_addr);
 
 	for (i = 0; i < size; i++)
 		*val_ptr++ = *phys_addr++;
@@ -473,6 +479,24 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer)
 	 * getting the values from two matrices, you will perform multiplication and
 	 * store the result to the "answer array"
 	 */
+	int i, k, j = 0;
+	int num1, num2, total;
+	unsigned int addr_mat1, addr_mat2, addr_ans;
 	if (!mat1 || !mat2)
 		return;
+	for (i = 0; i < size; i++) {
+		for (j = 0; j < size; j++) {
+			total = 0;
+			//answer[i][j] += mat1[i][k] * mat2[k][j]
+			for (k = 0; k < size; k++) {
+				addr_mat1 = (unsigned int)mat1 + (i * size * sizeof(int)) + (k * sizeof(int));
+				addr_mat2 = (unsigned int)mat2 + (k * size * sizeof(int)) + (j * sizeof(int));
+				get_value((void *)addr_mat1, &num1, sizeof(int));
+				get_value((void *)addr_mat2, &num2, sizeof(int));
+				total += num1 * num2;
+			}	
+			addr_ans = (unsigned int)answer + (i * size * sizeof(int)) + (j * sizeof(int));
+			put_value((void*)addr_ans, &total, sizeof(int));
+		}
+	}
 }
