@@ -22,17 +22,6 @@
 #define map_get_bit(map, index) \
 	(((char *) map)[(index) / 8] & (1UL << ((index) % 8)))
 
-#define set_bit(x, num) ((x) |= (1UL << (num)))
-#define clear_bit(x, num) ((x) &= ~(1UL << (num)))
-
-#define valid_bit_set(x) ((x) & 0x80000000)
-#define set_valid_bit(x) (set_bit(x, 31))
-#define clear_valid_bit(x) (clear_bit(x, 31))
-
-#define free_bit_set(x) ((x) & 0x40000000)
-#define set_free_bit(x) (set_bit(x, 30))
-#define clear_free_bit(x) (clear_bit(x, 30))
-
 static struct tlb tlb_store;
 
 static unsigned long total_pages;
@@ -113,17 +102,21 @@ void set_physical_mem(void)
  */
 int add_TLB(void *va, void *pa)
 {
+	unsigned long i, tag;
+
 	/* Part 2 HINT: Add a virtual to physical page translation to the TLB */
-	//va % numentires
-	unsigned long i = (unsigned long)va % TLB_ENTRIES;
-	tlb_store.entries[i].virt_addr = va;
-	tlb_store.entries[i].page_number = pa;
+	tag = (unsigned long) va >> off_bits;
+	i = tag % TLB_ENTRIES;
+
+	tlb_store.entries[i].virt_addr = tag;
+	tlb_store.entries[i].page_number = (unsigned long) pa;
 	tlb_store.entries[i].valid = true;
 	return 0;
 }
 
 static unsigned int tlb_misses;
 static unsigned int tlb_lookups;
+
 /*
  * Part 2: Check TLB for a valid translation.
  * Returns the physical page address.
@@ -131,10 +124,14 @@ static unsigned int tlb_lookups;
  */
 pte_t *check_TLB(void *va)
 {
-	unsigned long i = (unsigned long)va % TLB_ENTRIES;
+	unsigned long i, tag;
+
+	tag = (unsigned long) va >> off_bits;
+	i = tag % TLB_ENTRIES;
+
 	tlb_lookups++;
-	if (tlb_store.entries[i].valid)
-		return tlb_store.entries[i].page_number;
+	if (tlb_store.entries[i].valid && tlb_store.entries[i].virt_addr == tag)
+		return (pte_t *) tlb_store.entries[i].page_number;
 	tlb_misses++;
 	return NULL;
 }
@@ -145,8 +142,9 @@ pte_t *check_TLB(void *va)
  */
 void print_TLB_missrate(void)
 {
-	double miss_rate = (double)tlb_misses / tlb_lookups;
+	double miss_rate;
 
+	miss_rate = tlb_lookups ? (double) tlb_misses / tlb_lookups : 0.0;
 	fprintf(stderr, "TLB miss rate %lf\n", miss_rate);
 }
 
@@ -180,6 +178,10 @@ pte_t *translate(pde_t *pgdir, void *va)
 	table_index = mid_bits(virt_addr, page_table_bits, off_bits);
 	offset = low_bits(virt_addr, off_bits);
 
+	page_num = (unsigned long) check_TLB(va);
+	if (page_num)
+		goto tlb_hit;
+
 	/*
 	 * Retrieve the entry from the page directory to the get physical page
 	 * of our page table.
@@ -201,9 +203,10 @@ pte_t *translate(pde_t *pgdir, void *va)
 	page_num = low_bits(table_entry, phys_page_bits);
 
 	/*
-	 * From the page table entry, we can grab the physical page number
+	 * From the page table entry or TLB, we grab the physical page number
 	 * and factor in our offset to grab the final address.
 	 */
+tlb_hit:
 	addr = (unsigned long) ((char *) phys_mem + page_num * PGSIZE);
 	addr += offset;
 	return (pte_t *) addr;
@@ -265,6 +268,7 @@ int page_map(pde_t *pgdir, void *va, void *pa)
 		page_num = ((pte_t) pa - (pte_t) phys_mem) / PGSIZE;
 		new_entry = page_num;
 		page_table[table_index] = new_entry;
+		add_TLB(va, (void *) page_num);
 	}
 	return 0;
 }
@@ -290,19 +294,7 @@ void *get_next_avail(int num_pages)
 	return 0;
 }
 
-static unsigned long create_virt_addr(unsigned long ppn)
-{
-	unsigned long new_va, entries_per_page;
-
-	entries_per_page = 1 << page_table_bits;
-	new_va = (ppn / entries_per_page) << page_table_bits;
-	new_va |= ppn % entries_per_page;
-	new_va <<= off_bits;
-	return new_va;
-}
-
-
-static void *__create_virt_addr(unsigned long ppn)
+static void *create_virt_addr(unsigned long ppn)
 {
 	unsigned long new_va, entries_on_dir, entries_on_table;
 
@@ -313,17 +305,17 @@ static void *__create_virt_addr(unsigned long ppn)
 	new_va <<= off_bits;
 	return (void *) new_va;
 }
-#define create_virt_addr(x) __create_virt_addr(x)
 
 /* Function responsible for allocating pages and used by the benchmark */
 void *a_malloc(unsigned int num_bytes)
 {
 	static int initialized;
-	unsigned long page_num, va = 0;
+	void *va = NULL;
+	unsigned long page_num;
 	unsigned int num_pages, i;
 
 	if (!num_bytes)
-		goto malloc_fail;
+		return NULL;
 
 	pthread_mutex_lock(&mut);
 	if (!initialized) {
@@ -348,13 +340,13 @@ void *a_malloc(unsigned int num_bytes)
 	printf("Allocating %u page(s) starting at ppn: %lu\n", num_pages, page_num);
 
 	va = create_virt_addr(page_num);
-	page_map(page_dir, (void *) va, (char *) phys_mem + (page_num * PGSIZE));
+	page_map(page_dir, va, (char *) phys_mem + page_num * PGSIZE);
 
 	/* Allocate extra pages if we need to */
 	for (i = 1; i < num_pages; i++) {
-		unsigned long extra_pages = create_virt_addr(++page_num);
-
-		page_map(page_dir, (void *) extra_pages, (char *) phys_mem + (page_num * PGSIZE));
+		page_num++;
+		page_map(page_dir, create_virt_addr(page_num),
+				(char *) phys_mem + page_num * PGSIZE);
 	}
 
 	/*
@@ -366,8 +358,7 @@ void *a_malloc(unsigned int num_bytes)
 
 malloc_fail_unlock:
 	pthread_mutex_unlock(&mut);
-malloc_fail:
-	return (void *) va;
+	return va;
 }
 
 /*
@@ -413,26 +404,25 @@ void a_free(void *va, int size)
  */
 void put_value(void *va, void *val, int size)
 {
-	unsigned int i, num_pages = size / PGSIZE;
-	char *phys_addr, *val_ptr = val;
+	int i;
+	char *phys_addr, *val_ptr = val, *virt_addr = va;
+
 	/*
 	 * HINT: Using the virtual address and translate(), find the physical page. Copy
 	 * the contents of "val" to a physical page. NOTE: The "size" value can be larger
 	 * than one page. Therefore, you may have to find multiple pages using translate()
 	 * function
 	 */
-	if (!va || !val || !size)
+	if (!va || !val || size <= 0)
 		return;
 
-	for (i = 0; i < size; i++) {
-		phys_addr = (char *) translate(page_dir, va);
+	for (i = 0; i < size; i++, virt_addr++) {
+		phys_addr = (char *) translate(page_dir, virt_addr);
 		if (!phys_addr) {
 			printf("%s: Address translation failed!\n", __func__);
 			return;
 		}
-		//printf("%s: %p\n", __func__, phys_addr);
 		*phys_addr = *val_ptr++;
-		va = (char *) va + 1;
 	}
 }
 
@@ -444,21 +434,21 @@ void put_value(void *va, void *val, int size)
 void get_value(void *va, void *val, int size)
 {
 	int i;
-	char *phys_addr, *val_ptr = val;
+	char *phys_addr, *val_ptr = val, *virt_addr = va;
+
 	/*
 	 * HINT: put the values pointed to by "va" inside the physical memory at given
 	 * "val" address. Assume you can access "val" directly by derefencing them
 	 */
-	if (!va || !val || !size)
+	if (!va || !val || size <= 0)
 		return;
 
-	phys_addr = (char *) translate(page_dir, va);
-	if (!phys_addr)
-		return;
-	//printf("%s: %p\n", __func__, phys_addr);
-
-	for (i = 0; i < size; i++)
-		*val_ptr++ = *phys_addr++;
+	for (i = 0; i < size; i++, virt_addr++) {
+		phys_addr = (char *) translate(page_dir, virt_addr);
+		if (!phys_addr)
+			return;
+		*val_ptr++ = *phys_addr;
+	}
 }
 
 
@@ -477,24 +467,32 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer)
 	 * getting the values from two matrices, you will perform multiplication and
 	 * store the result to the "answer array"
 	 */
-	int i, k, j = 0;
-	int num1, num2, total;
+	int i, k, j, num1, num2, total;
 	unsigned int addr_mat1, addr_mat2, addr_ans;
+
 	if (!mat1 || !mat2 || !answer || size <= 0)
 		return;
+
 	for (i = 0; i < size; i++) {
 		for (j = 0; j < size; j++) {
 			total = 0;
 			/* answer[i][j] += mat1[i][k] * mat2[k][j] */
 			for (k = 0; k < size; k++) {
-				addr_mat1 = (unsigned int)mat1 + (i * size * sizeof(int)) + (k * sizeof(int));
-				addr_mat2 = (unsigned int)mat2 + (k * size * sizeof(int)) + (j * sizeof(int));
-				get_value((void *)addr_mat1, &num1, sizeof(int));
-				get_value((void *)addr_mat2, &num2, sizeof(int));
+				addr_mat1 = (unsigned int) mat1 +
+						(i * size * sizeof(int)) +
+						(k * sizeof(int));
+
+				addr_mat2 = (unsigned int) mat2 +
+						(k * size * sizeof(int)) +
+						(j * sizeof(int));
+
+				get_value((void *) addr_mat1, &num1, sizeof(int));
+				get_value((void *) addr_mat2, &num2, sizeof(int));
 				total += num1 * num2;
 			}
-			addr_ans = (unsigned int)answer + (i * size * sizeof(int)) + (j * sizeof(int));
-			put_value((void*)addr_ans, &total, sizeof(int));
+			addr_ans = (unsigned int) answer +
+					(i * size * sizeof(int)) + (j * sizeof(int));
+			put_value((void *) addr_ans, &total, sizeof(int));
 		}
 	}
 }
