@@ -68,6 +68,17 @@ void set_physical_mem(void)
 	off_bits = (unsigned int) log_2(PGSIZE);
 	page_table_bits = (unsigned int) log_2(PGSIZE / sizeof(pte_t));
 	page_dir_bits = ADDR_BITS - page_table_bits - off_bits;
+	if (!page_dir_bits) {
+		unsigned int bits_remaining = ADDR_BITS - off_bits;
+		/*
+		 * This only gets triggered on very large page sizes
+		 * such as 128k pages.
+		 */
+		page_table_bits = bits_remaining / 2;
+		if (bits_remaining % 2)
+			page_table_bits++;
+		page_dir_bits = bits_remaining / 2;
+	}
 
 	/* How many bits we use to address the physical pages */
 	phys_page_bits = page_table_bits + page_dir_bits;
@@ -78,7 +89,7 @@ void set_physical_mem(void)
 	 * 2^(page_table_bits + page_dir_bits) / (# bits in char)
 	 * # bits in char = 2^3
 	 */
-	phys_map_size = (1UL << (page_table_bits + page_dir_bits)) >> 3;
+	phys_map_size = total_pages / 8;
 	alloc_map = malloc(phys_map_size);
 	if (!alloc_map)
 		err(-1, "%s: Error allocating %lu bytes for bitmap",
@@ -134,6 +145,17 @@ pte_t *check_TLB(void *va)
 		return (pte_t *) tlb_store.entries[i].page_number;
 	tlb_misses++;
 	return NULL;
+}
+
+static void invalidate_entry_TLB(void *va)
+{
+	unsigned long i, tag;
+
+	tag = (unsigned long) va >> off_bits;
+	i = tag % TLB_ENTRIES;
+
+	if (tlb_store.entries[i].valid && tlb_store.entries[i].virt_addr == tag)
+		tlb_store.entries[i].valid = false;
 }
 
 /*
@@ -393,6 +415,7 @@ void a_free(void *va, int size)
 		if (!map_get_bit(alloc_map, ppn))
 			break;
 		map_clear_bit(alloc_map, ppn);
+		invalidate_entry_TLB(create_virt_addr(ppn));
 	}
 	pthread_mutex_unlock(&mut);
 }
