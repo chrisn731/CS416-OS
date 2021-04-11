@@ -24,8 +24,6 @@
 
 static struct tlb tlb_store;
 
-static unsigned long total_pages;
-
 static unsigned long phys_mem_size;
 static void *phys_mem;
 static pde_t *page_dir;
@@ -35,20 +33,29 @@ static unsigned int page_dir_bits;
 static unsigned int page_table_bits;
 static unsigned int phys_page_bits;
 
+static unsigned long total_pages;
 static unsigned char *alloc_map;
+static unsigned char *virt_map;
 
+/* General lock */
 static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 
+/* Locks used to ensure coherence in maps and tables */
+static pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t map_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Clean up physical memory mapping, and bitmaps when program finishes */
 static void free_phys_mem(void)
 {
 	munmap(phys_mem, phys_mem_size);
 	free(alloc_map);
+	free(virt_map);
 }
 
 /* Function responsible for allocating and setting your physical memory */
 void set_physical_mem(void)
 {
-	unsigned long phys_map_size;
+	unsigned long map_size;
 
 	/*
 	 * Allocate physical memory using mmap or malloc; this is the total size of
@@ -84,20 +91,20 @@ void set_physical_mem(void)
 	phys_page_bits = page_table_bits + page_dir_bits;
 	total_pages = phys_mem_size / PGSIZE;
 
-	/*
-	 * The size of the bit map will be:
-	 * 2^(page_table_bits + page_dir_bits) / (# bits in char)
-	 * # bits in char = 2^3
-	 */
-	phys_map_size = total_pages / 8;
-	alloc_map = malloc(phys_map_size);
-	if (!alloc_map)
+	map_size = total_pages / 8;
+	alloc_map = malloc(map_size);
+	virt_map = malloc(map_size);
+	if (!alloc_map || !virt_map)
 		err(-1, "%s: Error allocating %lu bytes for bitmap",
-				__func__, phys_map_size);
-	memset(alloc_map, 0, phys_map_size);
+				__func__, map_size);
+	memset(alloc_map, 0, map_size);
+	memset(virt_map, 0, map_size);
 
 	/* We use page 0 as our directory */
 	map_set_bit(alloc_map, 0);
+
+	/* We do not want a virtual address to be 0x000... (or NULL) */
+	map_set_bit(virt_map, 0);
 
 	/* Free our physical memory when our application finishes */
 	if (atexit(&free_phys_mem) != 0)
@@ -131,7 +138,6 @@ static unsigned int tlb_lookups;
 /*
  * Part 2: Check TLB for a valid translation.
  * Returns the physical page address.
- * Feel free to extend this function and change the return type.
  */
 pte_t *check_TLB(void *va)
 {
@@ -147,6 +153,7 @@ pte_t *check_TLB(void *va)
 	return NULL;
 }
 
+/* Invalidates a virtual address in the TLB. */
 static void invalidate_entry_TLB(void *va)
 {
 	unsigned long i, tag;
@@ -181,14 +188,6 @@ pte_t *translate(pde_t *pgdir, void *va)
 	unsigned long dir_index, offset, table_index, table_num, page_num, addr;
 	unsigned long virt_addr = (unsigned long) va;
 
-	/*
-	 * Part 1 HINT: Get the Page directory index (1st level) Then get the
-	 * 2nd-level-page table index using the virtual address.  Using the page
-	 * directory index and page table index get the physical address.
-	 *
-	 * Part 2 HINT: Check the TLB before performing the translation. If
-	 * translation exists, then you can return physical address from the TLB.
-	 */
 	if (!pgdir || !va)
 		return NULL;
 
@@ -209,19 +208,17 @@ pte_t *translate(pde_t *pgdir, void *va)
 	 * of our page table.
 	 */
 	dir_entry = pgdir[dir_index];
-	if (!dir_entry) {
-		printf("%s: No directory entry for 0x%p", __func__, va);
+	if (!dir_entry)
 		return NULL;
-	}
+
 	table_num = low_bits(dir_entry, phys_page_bits);
 
 	/* Go to the relevant page table, and retrieve the page table entry. */
 	page_table = (pte_t *) ((char *) phys_mem + table_num * PGSIZE);
 	table_entry = page_table[table_index];
-	if (!table_entry) {
-		printf("%s: No table entry for 0x%p", __func__, va);
+	if (!table_entry)
 		return NULL;
-	}
+
 	page_num = low_bits(table_entry, phys_page_bits);
 
 	/*
@@ -257,16 +254,17 @@ int page_map(pde_t *pgdir, void *va, void *pa)
 {
 	pte_t table_entry, *page_table;
 	pde_t dir_entry;
-	unsigned long dir_index, table_index, table_num;
-	unsigned long virt_addr = (unsigned long) va;
+	unsigned long dir_index, table_index, table_num, page_num, virt_addr;
 	/*
 	 * HINT: Similar to translate(), find the page directory (1st level)
 	 * and page table (2nd-level) indices. If no mapping exists, set the
 	 * virtual to physical mapping
 	 */
+
 	if (!pgdir || !va || !pa)
 		return -1;
 
+	virt_addr = (unsigned long) va;
 	dir_index = top_bits(virt_addr, page_dir_bits);
 	table_index = mid_bits(virt_addr, page_table_bits, off_bits);
 
@@ -275,28 +273,43 @@ int page_map(pde_t *pgdir, void *va, void *pa)
 		/* We are mapping to a new table */
 		dir_entry = alloc_new_table();
 		map_set_bit(alloc_map, dir_entry);
-		printf("Allocating new page table at ppn: %lu\n", dir_entry);
 		pgdir[dir_index] = dir_entry;
 	}
 	table_num = low_bits(dir_entry, phys_page_bits);
 
 	page_table = (pte_t *) ((char *) phys_mem + table_num * PGSIZE);
 	table_entry = page_table[table_index];
-	if (!table_entry) {
-		/* If there is no entry or non valid, we need to map it. */
-		pte_t new_entry;
-		unsigned long page_num;
+	page_num = ((pte_t) pa - (pte_t) phys_mem) / PGSIZE;
+	if (table_entry != (pte_t) page_num) {
+		/* Only edit the entry if we it needs to be updated */
+		page_table[table_index] = (pte_t) page_num;
+	}
+	add_TLB(va, (void *) page_num);
+	return 0;
+}
 
-		page_num = ((pte_t) pa - (pte_t) phys_mem) / PGSIZE;
-		new_entry = page_num;
-		page_table[table_index] = new_entry;
-		add_TLB(va, (void *) page_num);
+/* Returns the next avaiable (non-valid) entries for virtual bitmap */
+static int get_next_avail_entry(int num_entries)
+{
+	unsigned int i, free_page = 0, available_pages = 0;
+
+	for (i = 0; i < total_pages; i++) {
+		if (!map_get_bit(virt_map, i)) {
+			if (!free_page)
+				free_page = i;
+			available_pages++;
+			if (available_pages == num_entries)
+				return free_page;
+		} else {
+			free_page = 0;
+			available_pages = 0;
+		}
 	}
 	return 0;
 }
 
 
-/* Function that gets the next available page */
+/* Function that gets the next available physical page */
 void *get_next_avail(int num_pages)
 {
 	unsigned int i, free_page = 0, available_pages = 0;
@@ -333,54 +346,78 @@ void *a_malloc(unsigned int num_bytes)
 {
 	static int initialized;
 	void *va = NULL;
-	unsigned long page_num;
-	unsigned int num_pages, i;
+	unsigned int num_pages, i, open_entry, first_page;
 
 	if (!num_bytes)
 		return NULL;
 
 	pthread_mutex_lock(&mut);
 	if (!initialized) {
-		/*
-		 * HINT: If the physical memory is not yet initialized,
-		 * then allocate and initialize.
-		 */
+		/* Initalize memory if we have not yet. */
 		set_physical_mem();
 		initialized = 1;
 	}
+	pthread_mutex_unlock(&mut);
 
 	num_pages = num_bytes / PGSIZE;
 	if (num_bytes % PGSIZE)
 		num_pages++;
 
-	page_num = (unsigned long) get_next_avail(num_pages);
-	if (!page_num)
-		goto malloc_fail_unlock;
+	pthread_mutex_lock(&map_lock);
+	/* Find continuous open entries */
+	open_entry = get_next_avail_entry(num_pages);
+	if (!open_entry)
+		goto err_unlock_map;
+
+	/* Set all the entries we are going to use to valid */
 	for (i = 0; i < num_pages; i++)
-		map_set_bit(alloc_map, page_num + i);
-
-	printf("Allocating %u page(s) starting at ppn: %lu\n", num_pages, page_num);
-
-	va = create_virt_addr(page_num);
-	page_map(page_dir, va, (char *) phys_mem + page_num * PGSIZE);
-
-	/* Allocate extra pages if we need to */
-	for (i = 1; i < num_pages; i++) {
-		page_num++;
-		page_map(page_dir, create_virt_addr(page_num),
-				(char *) phys_mem + page_num * PGSIZE);
-	}
+		map_set_bit(virt_map, open_entry + i);
+	va = create_virt_addr(open_entry++);
 
 	/*
-	 * HINT: If the page directory is not initialized, then initialize the
-	 * page directory. Next, using get_next_avail(), check if there are free pages. If
-	 * free pages are available, set the bitmaps and map a new page. Note, you will
-	 * have to mark which physical pages are used.
+	 * Find the first available page and set corresponding bit in the map
+	 * and map it in the table.
 	 */
+	first_page = (unsigned int) get_next_avail(1);
+	if (!first_page)
+		goto err_unlock_map;
+	map_set_bit(alloc_map, first_page);
+	page_map(page_dir, va, (char *) phys_mem + first_page * PGSIZE);
+	pthread_mutex_unlock(&map_lock);
 
-malloc_fail_unlock:
-	pthread_mutex_unlock(&mut);
+	/* Map additional pages if num_bytes > PGSIZE */
+	for (i = 1; i < num_pages; i++, open_entry++) {
+		unsigned int ppn;
+		void *virt_addr_entry = create_virt_addr(open_entry);
+
+		/* Set the physical page and virtual page maps, and map the page */
+		pthread_mutex_lock(&map_lock);
+		ppn = (unsigned int) get_next_avail(1);
+		map_set_bit(alloc_map, ppn);
+		pthread_mutex_unlock(&map_lock);
+
+		pthread_mutex_lock(&table_lock);
+		page_map(page_dir, virt_addr_entry, (char *) phys_mem + ppn * PGSIZE);
+		pthread_mutex_unlock(&table_lock);
+	}
+
 	return va;
+
+err_unlock_map:
+	pthread_mutex_unlock(&map_lock);
+	return NULL;
+}
+
+/* Convert a virtual address to the index in the virtual bitmap */
+static unsigned int virt_addr_to_index(void *va)
+{
+	unsigned long virt_addr = (unsigned long) va;
+	unsigned int index;
+
+	index = top_bits(virt_addr, page_dir_bits) << page_table_bits;
+	index += mid_bits(virt_addr, page_table_bits, off_bits);
+	//printf("Index of virtaddr: %lu from %p\n", index, va);
+	return index;
 }
 
 /*
@@ -389,15 +426,8 @@ malloc_fail_unlock:
  */
 void a_free(void *va, int size)
 {
-	unsigned long i, num_to_free, phys_addr, ppn;
+	unsigned long i, num_to_free, virt_map_index, virt_addr;
 
-	/*
-	 * Part 1: Free the page table entries starting from this virtual address
-	 * (va). Also mark the pages free in the bitmap. Perform free only if the
-	 * memory from "va" to va+size is valid.
-	 *
-	 * Part 2: Also, remove the translation from the TLB
-	 */
 	if (!va || size <= 0)
 		return;
 
@@ -405,19 +435,45 @@ void a_free(void *va, int size)
 	if (size % PGSIZE)
 		num_to_free++;
 
-	phys_addr = (unsigned long) translate(page_dir, va);
-	if (!phys_addr)
-		return;
+	/* Find which entries the virtual address corresponds to */
+	virt_map_index = virt_addr_to_index(va);
+	virt_addr = (unsigned long) va;
 
-	ppn = (phys_addr - (unsigned long) phys_mem) / PGSIZE;
-	pthread_mutex_lock(&mut);
-	for (i = 0; i < num_to_free; i++, ppn++) {
-		if (!map_get_bit(alloc_map, ppn))
-			break;
-		map_clear_bit(alloc_map, ppn);
-		invalidate_entry_TLB(create_virt_addr(ppn));
+	/* Ensure that we can free all the pages requested. */
+	pthread_mutex_lock(&map_lock);
+	for (i = 0; i < num_to_free; i++) {
+		if (!map_get_bit(virt_map, virt_map_index + i)) {
+			/* We are trying to free an invalid mapping */
+			pthread_mutex_unlock(&map_lock);
+			return;
+		}
 	}
-	pthread_mutex_unlock(&mut);
+	pthread_mutex_unlock(&map_lock);
+
+	/*
+	 * At this point, we know that va + size are all valid to free,
+	 * thus we can go ahead and start freeing memory.
+	 */
+	for (i = 0; i < num_to_free; i++) {
+		unsigned long phys_addr, ppn;
+
+		/* Get the physical page number */
+		phys_addr = (unsigned long) translate(page_dir, (void *) virt_addr);
+		ppn = (phys_addr - (unsigned long) phys_mem) / PGSIZE;
+
+		/* Clear the bits of the physical and virtual bitmaps */
+		pthread_mutex_lock(&map_lock);
+		map_clear_bit(alloc_map, ppn);
+		map_clear_bit(virt_map, virt_map_index);
+		pthread_mutex_unlock(&map_lock);
+
+		invalidate_entry_TLB((void *) virt_addr);
+
+		/* Move on to the next pages */
+		virt_map_index++;
+		virt_addr += PGSIZE;
+	}
+
 }
 
 
@@ -468,8 +524,10 @@ void get_value(void *va, void *val, int size)
 
 	for (i = 0; i < size; i++, virt_addr++) {
 		phys_addr = (char *) translate(page_dir, virt_addr);
-		if (!phys_addr)
+		if (!phys_addr) {
+			printf("%s: Address translation failed!\n", __func__);
 			return;
+		}
 		*val_ptr++ = *phys_addr;
 	}
 }
