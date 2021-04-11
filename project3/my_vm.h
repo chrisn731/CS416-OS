@@ -29,9 +29,10 @@ typedef unsigned long pde_t;
 
 struct tlb {
 	/*
-	 * Assume your TLB is a direct mapped TLB with number of entries as TLB_ENTRIES
-	 * Think about the size of each TLB entry that performs virtual to physical
-	 * address translation.
+	 * We store the virtual address (tag) so we can convert
+	 * directly to a page number. Also we can hold a valid variable
+	 * to keep track if we can use a mapping through multiple malloc's
+	 * and free's
 	 */
 	struct {
 		unsigned long virt_addr;
@@ -40,16 +41,16 @@ struct tlb {
 	} entries[TLB_ENTRIES];
 };
 
-void set_physical_mem(void);
+pte_t *check_TLB(void *va);
 pte_t* translate(pde_t *pgdir, void *va);
+int add_TLB(void *va, void *pa);
 int page_map(pde_t *pgdir, void *va, void* pa);
-bool check_in_tlb(void *va);
-void put_in_tlb(void *va, void *pa);
-void *a_malloc(unsigned int num_bytes);
 void a_free(void *va, int size);
+void *a_malloc(unsigned int num_bytes);
 void put_value(void *va, void *val, int size);
 void get_value(void *va, void *val, int size);
 void mat_mult(void *mat1, void *mat2, int size, void *answer);
 void print_TLB_missrate(void);
+void set_physical_mem(void);
 
 #endif
