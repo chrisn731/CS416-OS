@@ -368,8 +368,6 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len)
 	}
 	free(entries);
 	return -ENOENT;
-
-
 }
 
 /*
@@ -875,6 +873,43 @@ static int tfs_open(const char *path, struct fuse_file_info *fi)
 	return get_node_by_path(path, 0, &file_node) ? -1 : 0;
 }
 
+static void ptr_to_indirect(int *block_ptr, int *iptr_index, struct inode *i)
+{
+	int ptr = *block_ptr, index = *iptr_index;
+
+	/*
+	 * ptr will keep track of which index to use of the indirect
+	 * pointers.
+	 * index will keep track of the index of the ptr WITHIN the
+	 * data block that the indirect pointers point to.
+	 */
+
+	ptr -= ARRAY_SIZE(i->direct_ptr);
+	index = ptr % (BLOCK_SIZE / sizeof(int));
+	ptr /= BLOCK_SIZE / sizeof(int);
+	*block_ptr = ptr;
+	*iptr_index = index;
+}
+
+static int __tfs_read_get_block(int read_block_ptr, struct inode *inode)
+{
+	int block_ptr;
+
+	if (read_block_ptr >= ARRAY_SIZE(inode->direct_ptr)) {
+		int iptr_index, *ptr_buffer;
+
+		ptr_to_indirect(&read_block_ptr, &iptr_index, inode);
+		ptr_buffer = malloc(BLOCK_SIZE);
+		bio_read(inode->indirect_ptr[read_block_ptr], ptr_buffer);
+		block_ptr = ptr_buffer[iptr_index];
+		free(ptr_buffer);
+	} else {
+		block_ptr = inode->direct_ptr[read_block_ptr];
+	}
+
+	return block_ptr;
+}
+
 /*
  * tfs_read - fuse read
  * path: path to the file to unlock
@@ -903,13 +938,12 @@ static int tfs_read(const char *path, char *buffer, size_t size,
 
 	// Step 2: Based on size and offset, read its data blocks from disk
 	for (bytes_read = 0; bytes_read < size && bytes_read < bytes_to_end;) {
-		int counter = 0, r_block_ptr = offset / BLOCK_SIZE;
+		int read_block, counter = 0, rblock_ptr = offset / BLOCK_SIZE;
 		char *reader = block_buffer;
 
-		if (!file_node.direct_ptr[r_block_ptr])
-			break;
+		read_block = __tfs_read_get_block(rblock_ptr, &file_node);
 
-		if (!bio_read(file_node.direct_ptr[r_block_ptr], block_buffer))
+		if (!bio_read(read_block, block_buffer))
 			break;
 
 		/*
@@ -933,6 +967,45 @@ static int tfs_read(const char *path, char *buffer, size_t size,
 	printf("EXITING READ WITH %d bytes read\n", bytes_read);
 	// Note: this function should return the amount of bytes you copied to buffer
 	return bytes_read;
+}
+
+
+static int __tfs_write_get_block(int write_block_ptr, struct inode *inode)
+{
+	int block_ptr;
+
+	if (write_block_ptr >= ARRAY_SIZE(inode->direct_ptr)) {
+		int iptr_index, *iptr, *ptr_buffer;
+
+		/*
+		 * The block we will write to is only accessible through
+		 * indirect pointers
+		 */
+		ptr_to_indirect(&write_block_ptr, &iptr_index, inode);
+
+		if (!inode->indirect_ptr[write_block_ptr])
+			inode->indirect_ptr[write_block_ptr] = get_avail_blkno();
+
+		ptr_buffer = malloc(BLOCK_SIZE);
+		bio_read(inode->indirect_ptr[write_block_ptr], ptr_buffer);
+		iptr = &ptr_buffer[iptr_index];
+		if (!*iptr) {
+			*iptr = get_avail_blkno();
+			inode->vstat.st_blocks++;
+			bio_write(inode->indirect_ptr[write_block_ptr], ptr_buffer);
+		}
+		block_ptr = *iptr;
+		free(ptr_buffer);
+	} else {
+		/* The block we will write to is in our direct pointers */
+		if (!inode->direct_ptr[write_block_ptr]) {
+			inode->direct_ptr[write_block_ptr] = get_avail_blkno();
+			inode->vstat.st_blocks++;
+		}
+		block_ptr = inode->direct_ptr[write_block_ptr];
+	}
+	return block_ptr;
+
 }
 
 /*
@@ -971,11 +1044,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size,
 		 * block ptr we need to access to start our writes.
 		 */
 		write_block_ptr = i / BLOCK_SIZE;
-		if (!file_inode.direct_ptr[write_block_ptr]) {
-			file_inode.direct_ptr[write_block_ptr] = get_avail_blkno();
-			file_inode.vstat.st_blocks++;
-		}
-		write_block = file_inode.direct_ptr[write_block_ptr];
+		write_block = __tfs_write_get_block(write_block_ptr, &file_inode);
 		bio_read(write_block, write_buffer);
 
 		/*
@@ -1061,7 +1130,10 @@ static int tfs_unlink(const char *path)
 	if (err)
 		goto out;
 
-	// Step 6: Call dir_remove() to remove directory entry of target file in its parent directory
+	/*
+	 * Step 6: Call dir_remove() to remove directory entry of target
+	 * file in its parent directory
+	 */
 	err = dir_remove(target_pdir, target, strlen(target));
 	if (err)
 		printf("%s: DIR REMOVE FAILED\n", __func__);
