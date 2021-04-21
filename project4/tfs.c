@@ -385,7 +385,7 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len)
 int get_node_by_path(const char *path, uint16_t ino, struct inode *inode)
 {
 	struct dirent de = {0};
-	char *path_dup, *path_walker;
+	char *path_dup, *path_walker, *to_free;
 
 	printf("Get NODE BY PATH: %s\n", path);
 	if (!strcmp(path, "/"))
@@ -394,6 +394,7 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode)
 	path_dup = strdup(path);
 	if (!path_dup)
 		return -ENOMEM;
+	to_free = path_dup;
 
 	while ((path_walker = strsep(&path_dup, "/")) != NULL) {
 		/*
@@ -404,11 +405,11 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode)
 		 */
 		if (*path_walker &&
 		    dir_find(de.ino, path_walker, strlen(path_walker), &de) < 0) {
-			free(path_dup);
+			free(to_free);
 			return -ENOENT;
 		}
 	}
-	free(path_dup);
+	free(to_free);
 found:
 	printf("FOUND!\n");
 	return readi(de.ino, inode);
