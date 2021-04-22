@@ -30,6 +30,7 @@
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #define DIRENTS_IN_BLOCK (BLOCK_SIZE / sizeof(struct dirent))
 #define INODES_IN_BLOCK (BLOCK_SIZE / sizeof(struct inode))
+#define member_size(type, member) (sizeof(((type *) 0)->member))
 
 char diskfile_path[PATH_MAX];
 
@@ -451,7 +452,8 @@ static void init_inode(struct inode *new, int open_inode, int type)
 }
 
 
-/* Make file system
+/*
+ * Make file system
  * tfs_mkfs - Intializes the disk
  *
  * 1. Loads in superblock default values
@@ -686,6 +688,12 @@ static int tfs_mkdir(const char *path, mode_t mode)
 	target = basename(basec);
 	parent = dirname(dirc);
 
+	/* Ensure that the target name can fit in an entry */
+	if (strlen(target) >= member_size(struct dirent, name)) {
+		err = -ENAMETOOLONG;
+		goto out;
+	}
+
 	// Step 2: Call get_node_by_path() to get inode of parent directory
 	err = get_node_by_path(parent, 0, &pdir_node);
 	if (err)
@@ -709,7 +717,7 @@ static int tfs_mkdir(const char *path, mode_t mode)
 	// Step 5: Update inode for target directory
 	init_inode(&new_dir_node, open_inode, TYPE_DIR);
 	new_dir_node.size = sizeof(struct dirent) * 2;
-	new_dir_stat->st_mode = S_IFDIR | 0755;
+	new_dir_stat->st_mode = S_IFDIR | mode;
 	new_dir_stat->st_nlink = 1;
 	new_dir_stat->st_ino = open_inode;
 	new_dir_stat->st_blocks = 1;
@@ -732,6 +740,48 @@ out:
 	free(basec);
 	free(new_dir);
 	return err;
+}
+
+/*
+ * release_data_blocks - releases data blocks inode points to
+ * target: target inode to release data blocks
+ */
+static void release_data_blocks(struct inode *target)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(target->direct_ptr) &&
+						target->direct_ptr[i]; i++) {
+		unset_bitmap(block_map, target->direct_ptr[i] -
+							superblock->d_start_blk);
+		target->direct_ptr[i] = 0;
+
+	}
+	if (target->type == TYPE_REG) {
+		int *ptr_buffer;
+
+		/*
+		 * If the inode is a file, we need to check for and release
+		 * indirect pointers.
+		 */
+		ptr_buffer = malloc(BLOCK_SIZE);
+		for (i = 0; i < ARRAY_SIZE(target->indirect_ptr) &&
+						target->indirect_ptr[i]; i++) {
+			int j;
+			bio_read(target->indirect_ptr[i], ptr_buffer);
+			for (j = 0; j < (BLOCK_SIZE / sizeof(int)); j++) {
+				if (!ptr_buffer[j])
+					break;
+				unset_bitmap(block_map, ptr_buffer[j] -
+							superblock->d_start_blk);
+			}
+			unset_bitmap(block_map, target->indirect_ptr[i] -
+						superblock->d_start_blk);
+
+		}
+		free(ptr_buffer);
+	}
+	bio_write(superblock->d_bitmap_blk, block_map);
 }
 
 /*
@@ -769,13 +819,7 @@ static int tfs_rmdir(const char *path)
 	target_inode.valid = 0;
 
 	// Step 3: Clear data block bitmap of target directory
-	for (block_ptr = 0; block_ptr < ARRAY_SIZE(target_inode.direct_ptr) &&
-				target_inode.direct_ptr[block_ptr]; block_ptr++) {
-		unset_bitmap(block_map, target_inode.direct_ptr[block_ptr] -
-							superblock->d_start_blk);
-		target_inode.direct_ptr[block_ptr] = 0;
-	}
-	bio_write(superblock->d_bitmap_blk, block_map);
+	release_data_blocks(&target_inode);
 
 	// Step 4: Clear inode bitmap and its data block
 	unset_bitmap(inode_map, target_inode.ino);
@@ -826,7 +870,12 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	 */
 	directory = dirname(dirc);
 	target = basename(basec);
-	printf("Creating %s in %s\n", target, directory);
+
+	/* Ensure that the target name can fit in an entry */
+	if (strlen(target) >= member_size(struct dirent, name)) {
+		err = -ENAMETOOLONG;
+		goto out;
+	}
 
 	// Step 2: Call get_node_by_path() to get inode of parent directory
 	err = get_node_by_path(directory, 0, &p);
@@ -836,14 +885,20 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	// Step 3: Call get_avail_ino() to get an available inode number
 	open_inode = get_avail_ino();
 
-	// Step 4: Call dir_add() to add directory entry of target file to parent directory
-	if (dir_add(p, open_inode, target, strlen(target)) < 0)
+	/*
+	 * Step 4: Call dir_add() to add directory entry of target file
+	 * to parent directory
+	 */
+	err = dir_add(p, open_inode, target, strlen(target));
+	if (err) {
 		fprintf(stderr, "Failed to add %s to %s\n", target, directory);
+		goto out;
+	}
 
 	// Step 5: Update inode for target file
 	init_inode(&target_inode, open_inode, TYPE_REG);
 	target_inode.size = 0;
-	target_stat->st_mode = S_IFREG | 0666;
+	target_stat->st_mode = S_IFREG | mode;
 	target_stat->st_nlink = 1;
 	target_stat->st_ino = open_inode;
 	target_stat->st_size = 0;
@@ -853,7 +908,6 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	target_stat->st_mtime = create_time;
 
 	// Step 6: Call writei() to write inode to disk
-	printf("EXITING CREATE\n");
 	writei(open_inode, &target_inode);
 out:
 	free(dirc);
@@ -874,6 +928,11 @@ static int tfs_open(const char *path, struct fuse_file_info *fi)
 	return get_node_by_path(path, 0, &file_node) ? -1 : 0;
 }
 
+/*
+ * ptr_to_indirect - converts block pointer to indirect pointers
+ * block_ptr: pointer index to become index of indirect pointer
+ * iptr_index: index of where the direct pointer lies in the data block
+ */
 static void ptr_to_indirect(int *block_ptr, int *iptr_index, struct inode *i)
 {
 	int ptr = *block_ptr, index = *iptr_index;
@@ -884,7 +943,6 @@ static void ptr_to_indirect(int *block_ptr, int *iptr_index, struct inode *i)
 	 * index will keep track of the index of the ptr WITHIN the
 	 * data block that the indirect pointers point to.
 	 */
-
 	ptr -= ARRAY_SIZE(i->direct_ptr);
 	index = ptr % (BLOCK_SIZE / sizeof(int));
 	ptr /= BLOCK_SIZE / sizeof(int);
@@ -892,6 +950,11 @@ static void ptr_to_indirect(int *block_ptr, int *iptr_index, struct inode *i)
 	*iptr_index = index;
 }
 
+/*
+ * __tfs_read_get_block - internal function for tfs_read to get next data block
+ * read_block_ptr: the index of block that we should retrieve
+ * inode: inode of the file we are reading from
+ */
 static int __tfs_read_get_block(int read_block_ptr, struct inode *inode)
 {
 	int block_ptr;
@@ -907,7 +970,6 @@ static int __tfs_read_get_block(int read_block_ptr, struct inode *inode)
 	} else {
 		block_ptr = inode->direct_ptr[read_block_ptr];
 	}
-
 	return block_ptr;
 }
 
@@ -970,7 +1032,11 @@ static int tfs_read(const char *path, char *buffer, size_t size,
 	return bytes_read;
 }
 
-
+/*
+ * __tfs_write_get_block - internal function to tfs_write to get next data block
+ * write_block_ptr: number of the next data block to get
+ * inode: inode of the file we are writing to
+ */
 static int __tfs_write_get_block(int write_block_ptr, struct inode *inode)
 {
 	int block_ptr;
@@ -1067,8 +1133,8 @@ static int tfs_write(const char *path, const char *buffer, size_t size,
 
 	/* If we allocated more space for the file, we need to update the size */
 	if (i > file_inode.size) {
-		file_inode.size += i - file_inode.size - 1;
-		file_inode.vstat.st_size += i - file_inode.vstat.st_size - 1;
+		file_inode.size = i - 1;
+		file_inode.vstat.st_size = i - 1;
 	}
 
 	/* Update modified time if we wrote anything */
@@ -1112,13 +1178,7 @@ static int tfs_unlink(const char *path)
 		goto out;
 
 	// Step 3: Clear data block bitmap of target file
-	for (block_ptr = 0; block_ptr < ARRAY_SIZE(target_node.direct_ptr) &&
-				target_node.direct_ptr[block_ptr]; block_ptr++) {
-		unset_bitmap(block_map, target_node.direct_ptr[block_ptr] -
-							superblock->d_start_blk);
-		target_node.direct_ptr[block_ptr] = 0;
-	}
-	bio_write(superblock->d_bitmap_blk, block_map);
+	release_data_blocks(&target_node);
 
 	// Step 4: Clear inode bitmap and its data block
 	target_node.valid = 0;
@@ -1141,7 +1201,7 @@ static int tfs_unlink(const char *path)
 out:
 	free(basec);
 	free(dirc);
-	return 0;
+	return err;
 }
 
 /*
