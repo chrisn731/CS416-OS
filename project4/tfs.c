@@ -726,6 +726,8 @@ static int tfs_mkdir(const char *path, mode_t mode)
 	time(&create_time);
 	new_dir_stat->st_atime = create_time;
 	new_dir_stat->st_mtime = create_time;
+	new_dir_stat->st_uid = getuid();
+	new_dir_stat->st_gid = getgid();
 
 	/* Set up initial directory entries */
 	init_dir(new_dir, open_inode, pdir_node.ino);
@@ -906,6 +908,8 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	time(&create_time);
 	target_stat->st_atime = create_time;
 	target_stat->st_mtime = create_time;
+	target_stat->st_gid = getgid();
+	target_stat->st_uid = getuid();
 
 	// Step 6: Call writei() to write inode to disk
 	writei(open_inode, &target_inode);
