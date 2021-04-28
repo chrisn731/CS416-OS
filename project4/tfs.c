@@ -18,7 +18,7 @@
 #include <sys/time.h>
 #include <libgen.h>
 #include <limits.h>
-#include <err.h>
+#include <stdarg.h>
 
 #include "block.h"
 #include "tfs.h"
@@ -61,18 +61,21 @@ static struct superblock __superblock_defaults = {
 /* In-memory superblock structure so we can read and write to heap */
 static struct superblock *superblock;
 
-
-static void _tfs_log(const char *fmt, ...)
+/*
+ * tfs_log - print log message, usually for errors
+ * fmt: msg to print
+ *
+ * We print to stdout because using the debug option (-d) for tfs only shows
+ * output to stdout
+ */
+static void tfs_log(const char *fmt, ...)
 {
-#if _TFS_LOGGING
 	va_list argp;
 	va_start(argp, fmt);
 	fprintf(stdout, "## [LOG] ");
 	vfprintf(stdout, fmt, argp);
-	va_end(argp, fmt);
+	va_end(argp);
 	fputc('\n', stdout);
-#endif
-	return;
 }
 
 /*
@@ -84,8 +87,7 @@ int get_avail_ino(void)
 
 	// Step 1: Read inode bitmap from disk
 	if (!bio_read(superblock->i_bitmap_blk, inode_map)) {
-		fprintf(stderr, "%s: Error reading inode map from disk\n",
-					__func__);
+		tfs_log("%s: Error reading inode map from disk", __func__);
 		return -1;
 	}
 
@@ -110,8 +112,7 @@ int get_avail_blkno(void)
 
 	// Step 1: Read data block bitmap from disk
 	if (!bio_read(superblock->d_bitmap_blk, block_map)) {
-		fprintf(stderr, "%s: Error reading block map from disk\n",
-					__func__);
+		tfs_log("%s: Error reading block map from disk\n", __func__);
 		return -1;
 	}
 
@@ -147,7 +148,7 @@ int readi(uint16_t ino, struct inode *inode)
 
 	block = malloc(BLOCK_SIZE);
 	if (!block)
-		err(-1, "%s: Error allocating %d bytes.", __func__, BLOCK_SIZE);
+		return -ENOMEM;
 
 	// Step 1: Get the inode's on-disk block number
 	inode_block_index = superblock->i_start_blk + inumber_to_blk(ino);
@@ -174,7 +175,7 @@ int writei(uint16_t ino, struct inode *inode)
 
 	block = malloc(BLOCK_SIZE);
 	if (!block)
-		err(-1, "%s: Error allocating %d bytes.", __func__, BLOCK_SIZE);
+		return -ENOMEM;
 
 	// Step 1: Get the block number where this inode resides on disk
 	inode_block_index = superblock->i_start_blk + inumber_to_blk(ino);
@@ -210,11 +211,16 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 {
 	struct inode dir_node;
 	struct dirent *entries;
-	int block_ptr, err = -1;
+	int block_ptr, err = -ENOENT;
 
-	// Step 1: Call readi() to get the inode using ino (inode number of current directory)
-	if (readi(ino, &dir_node) < 0)
-		return -1;
+	/*
+	 * Step 1: Call readi() to get the inode using ino
+	 * (inode number of current directory)
+	 */
+	if (readi(ino, &dir_node) < 0) {
+		tfs_log("%s: Error finding inode for ino (%d)", __func__, ino);
+		return err;
+	}
 
 	entries = malloc(BLOCK_SIZE);
 	if (!entries)
@@ -263,8 +269,10 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	int block_ptr;
 
 	/* Check to see if the file we are looking to add already exists */
-	if (!dir_find(dir_inode.ino, fname, name_len, &de))
+	if (!dir_find(dir_inode.ino, fname, name_len, &de)) {
+		tfs_log("%s: file '%s' already exists.", __func__, fname);
 		return -EEXIST;
+	}
 
 	entries = malloc(BLOCK_SIZE);
 	if (!entries)
@@ -316,8 +324,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 
 	}
 	free(entries);
-	return -ENOMEM;
-
+	return -ENOSPC;
 }
 
 /*
@@ -390,7 +397,7 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode)
 
 	printf("Get NODE BY PATH: %s\n", path);
 	if (!strcmp(path, "/"))
-		goto found;
+		return readi(0, inode);
 
 	path_dup = strdup(path);
 	if (!path_dup)
@@ -400,7 +407,7 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode)
 	while ((path_walker = strsep(&path_dup, "/")) != NULL) {
 		/*
 		 * The logic in this if statement is only explainable
-		 * by the strange things that strsep does. It is possible that
+		 * by the things that strsep does. It is possible that
 		 * if our path ends in "/" then it returns "\0" and we should
 		 * never send a blank string to dir find.
 		 */
@@ -411,8 +418,6 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode)
 		}
 	}
 	free(to_free);
-found:
-	printf("FOUND!\n");
 	return readi(de.ino, inode);
 }
 
@@ -473,7 +478,7 @@ int tfs_mkfs(void)
 
 	superblock = malloc(BLOCK_SIZE);
 	if (!superblock) {
-		fprintf(stderr, "%s: Error initializing superblock\n", __func__);
+		tfs_log("%s: Error initializing superblock", __func__);
 		return -ENOMEM;
 	}
 	*superblock = __superblock_defaults;
@@ -485,7 +490,7 @@ int tfs_mkfs(void)
 	inode_map = malloc(BLOCK_SIZE);
 	block_map = malloc(BLOCK_SIZE);
 	if (!inode_map || !block_map) {
-		fprintf(stderr, "%s: Error initializing maps.\n", __func__);
+		tfs_log("%s: Error initializing superblock", __func__);
 		return -ENOMEM;
 	}
 	memset(inode_map, 0, BLOCK_SIZE);
@@ -500,8 +505,11 @@ int tfs_mkfs(void)
 	/* Create first instances of inode entries and dir entries */
 	iroot = malloc(BLOCK_SIZE);
 	dir_root = malloc(BLOCK_SIZE);
-	if (!iroot || !dir_root)
+	if (!iroot || !dir_root) {
+		tfs_log("%s: Error initializing root inode and root entries",
+								__func__);
 		return -ENOMEM;
+	}
 
 	/*
 	 * Update inode for root directory
@@ -554,13 +562,12 @@ static void *tfs_init(struct fuse_conn_info *conn)
 	inode_map = malloc(BLOCK_SIZE);
 	block_map = malloc(BLOCK_SIZE);
 	if (!superblock || !inode_map || !block_map)
-		fprintf(stderr, "%s: Error initializing in-memory structures\n",
-					__func__);
+		tfs_log("%s: Error initializing in-memory structures.", __func__);
+
 	if (!bio_read(0, superblock) ||
 	    !bio_read(superblock->i_bitmap_blk, inode_map) ||
 	    !bio_read(superblock->d_bitmap_blk, block_map))
-		fprintf(stderr, "%s: Error reading data structures from disk.\n",
-					__func__);
+		tfs_log("%s: Error reading block structures from disk.", __func__);
 	return NULL;
 }
 
@@ -680,6 +687,7 @@ static int tfs_mkdir(const char *path, mode_t mode)
 	new_dir = malloc(BLOCK_SIZE);
 	if (!basec || !dirc || !new_dir)
 		return -ENOMEM;
+	memset(new_dir, 0, BLOCK_SIZE);
 
 	/*
 	 * Step 1: Use dirname() and basename() to separate parent directory
@@ -794,7 +802,7 @@ static int tfs_rmdir(const char *path)
 {
 	struct inode target_inode, parent_inode;
 	char *target, *parent, *dirc, *basec;
-	int block_ptr, err;
+	int err;
 
 	dirc = strdup(path);
 	basec = strdup(path);
@@ -839,7 +847,8 @@ static int tfs_rmdir(const char *path)
 	 */
 	err = dir_remove(parent_inode, target, strlen(target));
 	if (err)
-		_tfs_log("%s: dir_remove() failed.", __func__);
+		tfs_log("%s: failed remove %s from %s.",
+					__func__, target, parent);
 out:
 	free(dirc);
 	free(basec);
@@ -893,7 +902,8 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	 */
 	err = dir_add(p, open_inode, target, strlen(target));
 	if (err) {
-		fprintf(stderr, "Failed to add %s to %s\n", target, directory);
+		tfs_log("%s: Failed to add %s to %s",
+				__func__, target, directory);
 		goto out;
 	}
 
@@ -991,7 +1001,6 @@ static int tfs_read(const char *path, char *buffer, size_t size,
 	char *block_buffer;
 	int bytes_read, bytes_to_end;
 
-	printf("ENTERING READ WITH SIZE: %zu and OFFSET: %ld\n", size, offset);
 	// Step 1: You could call get_node_by_path() to get inode from path
 	if (get_node_by_path(path, 0, &file_node) < 0)
 		return -ENOENT;
@@ -1031,7 +1040,6 @@ static int tfs_read(const char *path, char *buffer, size_t size,
 	free(block_buffer);
 	// Step 3: copy the correct amount of data from offset to buffer
 
-	printf("EXITING READ WITH %d bytes read\n", bytes_read);
 	// Note: this function should return the amount of bytes you copied to buffer
 	return bytes_read;
 }
@@ -1094,8 +1102,6 @@ static int tfs_write(const char *path, const char *buffer, size_t size,
 	char *write_buffer;
 	int i, max, bytes_written = 0;
 
-	printf("ENTERING WRITE WITH path: %s, size: %zu, offset: %lu\n",
-			path, size, offset);
 	// Step 1: You could call get_node_by_path() to get inode from path
 	if (get_node_by_path(path, 0, &file_inode) < 0)
 		return -ENOENT;
@@ -1147,9 +1153,6 @@ static int tfs_write(const char *path, const char *buffer, size_t size,
 
 	// Step 4: Update the inode info and write it to disk
 	writei(file_inode.ino, &file_inode);
-
-	printf("EXITING WRITE WITH %d BYTES WRITTEN\n", bytes_written);
-	// Note: this function should return the amount of bytes you write to disk
 	return bytes_written;
 }
 
@@ -1161,7 +1164,7 @@ static int tfs_unlink(const char *path)
 {
 	struct inode target_node, target_pdir;
 	char *parent_dir, *target, *dirc, *basec;
-	int block_ptr, err;
+	int err;
 
 	/*
 	 * Step 1: Use dirname() and basename() to separate parent directory
@@ -1175,7 +1178,6 @@ static int tfs_unlink(const char *path)
 	parent_dir = dirname(dirc);
 	target = basename(basec);
 
-	printf("UNLINK CALLED ON %s IN %s\n", target, parent_dir);
 	// Step 2: Call get_node_by_path() to get inode of target file
 	err = get_node_by_path(path, 0, &target_node);
 	if (err)
@@ -1201,7 +1203,8 @@ static int tfs_unlink(const char *path)
 	 */
 	err = dir_remove(target_pdir, target, strlen(target));
 	if (err)
-		printf("%s: DIR REMOVE FAILED\n", __func__);
+		tfs_log("%s: Error removing %s from %s",
+				__func__, target, parent_dir);
 out:
 	free(basec);
 	free(dirc);
