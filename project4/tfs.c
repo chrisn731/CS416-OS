@@ -30,7 +30,7 @@
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #define DIRENTS_IN_BLOCK (BLOCK_SIZE / sizeof(struct dirent))
 #define INODES_IN_BLOCK (BLOCK_SIZE / sizeof(struct inode))
-#define member_size(type, member) (sizeof(((type *) 0)->member))
+#define sizeof_field(type, member) (sizeof(((type *) 0)->member))
 
 char diskfile_path[PATH_MAX];
 
@@ -395,7 +395,6 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode)
 	struct dirent de = {0};
 	char *path_dup, *path_walker, *to_free;
 
-	printf("Get NODE BY PATH: %s\n", path);
 	if (!strcmp(path, "/"))
 		return readi(0, inode);
 
@@ -694,7 +693,7 @@ static int tfs_mkdir(const char *path, mode_t mode)
 	parent = dirname(dirc);
 
 	/* Ensure that the target name can fit in an entry */
-	if (strlen(target) >= member_size(struct dirent, name)) {
+	if (strlen(target) >= sizeof_field(struct dirent, name)) {
 		err = -ENAMETOOLONG;
 		goto out;
 	}
@@ -880,7 +879,7 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	target = basename(basec);
 
 	/* Ensure that the target name can fit in an entry */
-	if (strlen(target) >= member_size(struct dirent, name)) {
+	if (strlen(target) >= sizeof_field(struct dirent, name)) {
 		err = -ENAMETOOLONG;
 		goto out;
 	}
@@ -1020,6 +1019,7 @@ static int tfs_read(const char *path, char *buffer, size_t size,
 			break;
 
 		/*
+		 * Step 3: copy the correct amount of data from offset to buffer
 		 * This loop actually reads from the file.
 		 * We need to keep track that we are:
 		 * 	1. Not reading more than requested
@@ -1035,9 +1035,6 @@ static int tfs_read(const char *path, char *buffer, size_t size,
 		}
 	}
 	free(block_buffer);
-	// Step 3: copy the correct amount of data from offset to buffer
-
-	// Note: this function should return the amount of bytes you copied to buffer
 	return bytes_read;
 }
 
@@ -1058,7 +1055,6 @@ static int __tfs_write_get_block(int write_block_ptr, struct inode *inode)
 		 * indirect pointers
 		 */
 		ptr_to_indirect(&write_block_ptr, &iptr_index, inode);
-
 		ptr_buffer = malloc(BLOCK_SIZE);
 		if (!ptr_buffer)
 			return -ENOMEM;
@@ -1091,7 +1087,6 @@ static int __tfs_write_get_block(int write_block_ptr, struct inode *inode)
 		block_ptr = inode->direct_ptr[write_block_ptr];
 	}
 	return block_ptr;
-
 }
 
 /*
