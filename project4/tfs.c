@@ -447,7 +447,7 @@ static void init_inode(struct inode *new, int open_inode, int type)
 
 	new->ino = open_inode;
 	new->valid = 1;
-	new->link = 0;
+	new->link = type == TYPE_REG ? 1 : 2;
 	new->direct_ptr[0] = get_avail_blkno();
 	for (i = 1; i < ARRAY_SIZE(new->direct_ptr); i++)
 		new->direct_ptr[i] = 0;
@@ -487,14 +487,12 @@ int tfs_mkfs(void)
 	bio_write(0, superblock);
 
 	/* Inode and data block bitmaps both take up one block. */
-	inode_map = malloc(BLOCK_SIZE);
-	block_map = malloc(BLOCK_SIZE);
+	inode_map = calloc(1, BLOCK_SIZE);
+	block_map = calloc(1, BLOCK_SIZE);
 	if (!inode_map || !block_map) {
 		tfs_log("%s: Error initializing superblock", __func__);
 		return -ENOMEM;
 	}
-	memset(inode_map, 0, BLOCK_SIZE);
-	memset(block_map, 0, BLOCK_SIZE);
 
 	// update bitmap information for root directory
 	set_bitmap(inode_map, 0);
@@ -519,9 +517,9 @@ int tfs_mkfs(void)
 	 */
 	iroot->ino = 0;
 	iroot->valid = 1;
-	iroot->size = 0;
+	iroot->size = sizeof(struct dirent) * 2;;
 	iroot->type = TYPE_DIR;
-	iroot->link = 0;
+	iroot->link = 2;
 	iroot->direct_ptr[0] = superblock->d_start_blk;
 	for (i = 1; i < ARRAY_SIZE(iroot->direct_ptr); i++)
 		iroot->direct_ptr[i] = 0;
@@ -684,10 +682,9 @@ static int tfs_mkdir(const char *path, mode_t mode)
 
 	dirc = strdup(path);
 	basec = strdup(path);
-	new_dir = malloc(BLOCK_SIZE);
+	new_dir = calloc(1, BLOCK_SIZE);
 	if (!basec || !dirc || !new_dir)
 		return -ENOMEM;
-	memset(new_dir, 0, BLOCK_SIZE);
 
 	/*
 	 * Step 1: Use dirname() and basename() to separate parent directory
@@ -726,7 +723,7 @@ static int tfs_mkdir(const char *path, mode_t mode)
 	init_inode(&new_dir_node, open_inode, TYPE_DIR);
 	new_dir_node.size = sizeof(struct dirent) * 2;
 	new_dir_stat->st_mode = S_IFDIR | mode;
-	new_dir_stat->st_nlink = 1;
+	new_dir_stat->st_nlink = 2;
 	new_dir_stat->st_ino = open_inode;
 	new_dir_stat->st_blocks = 1;
 	new_dir_stat->st_blksize = BLOCK_SIZE;
@@ -1062,11 +1059,21 @@ static int __tfs_write_get_block(int write_block_ptr, struct inode *inode)
 		 */
 		ptr_to_indirect(&write_block_ptr, &iptr_index, inode);
 
-		if (!inode->indirect_ptr[write_block_ptr])
-			inode->indirect_ptr[write_block_ptr] = get_avail_blkno();
-
 		ptr_buffer = malloc(BLOCK_SIZE);
-		bio_read(inode->indirect_ptr[write_block_ptr], ptr_buffer);
+		if (!ptr_buffer)
+			return -ENOMEM;
+
+		if (!inode->indirect_ptr[write_block_ptr]) {
+			/*
+			 * If we need to allocate a new data block of pointers
+			 * it should be zero'd because these are _new_ pointers.
+			 */
+			inode->indirect_ptr[write_block_ptr] = get_avail_blkno();
+			memset(ptr_buffer, 0, BLOCK_SIZE);
+		} else {
+			bio_read(inode->indirect_ptr[write_block_ptr], ptr_buffer);
+		}
+
 		iptr = &ptr_buffer[iptr_index];
 		if (!*iptr) {
 			*iptr = get_avail_blkno();
