@@ -10,10 +10,10 @@
 
 #define BLOCK_SIZE 4096
 
-void dev_init(const char* diskfile_path);
-int dev_open(const char* diskfile_path);
-void dev_close();
-int bio_read(const int block_num, void *buf);
-int bio_write(const int block_num, const void *buf);
+extern void dev_init(const char* diskfile_path);
+extern int dev_open(const char* diskfile_path);
+extern void dev_close(void);
+extern int bio_read(const int block_num, void *buf);
+extern int bio_write(const int block_num, const void *buf);
 
 #endif
