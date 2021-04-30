@@ -79,7 +79,7 @@ static void tfs_log(const char *fmt, ...)
 }
 
 /*
- * Get available inode number from bitmap
+ * get_avail_ino - Gets available inode index, sets bitmap and returns index
  */
 int get_avail_ino(void)
 {
@@ -104,8 +104,8 @@ int get_avail_ino(void)
 }
 
 /*
-* Get available data block number from bitmap
-*/
+ * get_avail_blkno - finds open data block, sets bitmap and returns index
+ */
 int get_avail_blkno(void)
 {
 	int block_num;
@@ -401,8 +401,8 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode)
 	path_dup = strdup(path);
 	if (!path_dup)
 		return -ENOMEM;
-	to_free = path_dup;
 
+	to_free = path_dup;
 	while ((path_walker = strsep(&path_dup, "/")) != NULL) {
 		/*
 		 * The logic in this if statement is only explainable
@@ -1005,7 +1005,6 @@ static int tfs_read(const char *path, char *buffer, size_t size,
 	if (!block_buffer)
 		return -ENOMEM;
 
-	/* bytes_to_end = file_node.vstat.st_blocks * BLOCK_SIZE - offset; */
 	bytes_to_end = file_node.vstat.st_size - offset;
 
 	// Step 2: Based on size and offset, read its data blocks from disk
