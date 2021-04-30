@@ -1011,7 +1011,7 @@ static int tfs_read(const char *path, char *buffer, size_t size,
 	// Step 2: Based on size and offset, read its data blocks from disk
 	for (bytes_read = 0; bytes_read < size && bytes_read < bytes_to_end;) {
 		int read_block, counter = 0, rblock_ptr = offset / BLOCK_SIZE;
-		char *reader = block_buffer;
+		char *reader = block_buffer + (offset % BLOCK_SIZE);
 
 		read_block = __tfs_read_get_block(rblock_ptr, &file_node);
 
@@ -1116,7 +1116,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size,
 	// Step 2: Based on size and offset, read its data blocks from disk
 	for (i = offset; i < max; i++) {
 		int write_block_ptr, write_block, counter;
-		char *writer = write_buffer;
+		char *writer = write_buffer + (i % BLOCK_SIZE);
 
 		/*
 		 * The offset / the size of our blocks lets us know which
