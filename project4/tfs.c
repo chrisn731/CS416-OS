@@ -97,7 +97,7 @@ int get_avail_ino(void)
 			// Step 3: Update inode bitmap and write to disk
 			set_bitmap(inode_map, inode_num);
 			bio_write(superblock->i_bitmap_blk, inode_map);
-			return inode_num;;
+			return inode_num;
 		}
 	}
 	return -1;
@@ -477,7 +477,7 @@ int tfs_mkfs(void)
 
 	superblock = malloc(BLOCK_SIZE);
 	if (!superblock) {
-		tfs_log("%s: Error initializing superblock", __func__);
+		tfs_log("%s: Error allocating memory for superblock", __func__);
 		return -ENOMEM;
 	}
 	*superblock = __superblock_defaults;
@@ -489,7 +489,7 @@ int tfs_mkfs(void)
 	inode_map = calloc(1, BLOCK_SIZE);
 	block_map = calloc(1, BLOCK_SIZE);
 	if (!inode_map || !block_map) {
-		tfs_log("%s: Error initializing superblock", __func__);
+		tfs_log("%s: Error allocating memory for bitmaps", __func__);
 		return -ENOMEM;
 	}
 
@@ -516,7 +516,7 @@ int tfs_mkfs(void)
 	 */
 	iroot->ino = 0;
 	iroot->valid = 1;
-	iroot->size = sizeof(struct dirent) * 2;;
+	iroot->size = sizeof(struct dirent) * 2;
 	iroot->type = TYPE_DIR;
 	iroot->link = 2;
 	iroot->direct_ptr[0] = superblock->d_start_blk;
@@ -542,8 +542,10 @@ int tfs_mkfs(void)
 }
 
 
+/* FUSE file operations */
+
 /*
- * FUSE file operations
+ * tfs_init - initalize filesystem, calls mkfs if disk has not been made
  */
 static void *tfs_init(struct fuse_conn_info *conn)
 {
@@ -733,13 +735,13 @@ static int tfs_mkdir(const char *path, mode_t mode)
 	new_dir_stat->st_uid = getuid();
 	new_dir_stat->st_gid = getgid();
 
-	/* Set up initial directory entries */
+	/*
+	 * Set up initial directory entries
+	 * Step 6: Call writei() to write inode to disk
+	 * Write inital entries to disk
+	 */
 	init_dir(new_dir, open_inode, pdir_node.ino);
-
-	// Step 6: Call writei() to write inode to disk
 	writei(open_inode, &new_dir_node);
-
-	/* Write the inital entries to disk */
 	bio_write(new_dir_node.direct_ptr[0], new_dir);
 out:
 	free(dirc);
@@ -761,8 +763,8 @@ static void release_data_blocks(struct inode *target)
 		unset_bitmap(block_map, target->direct_ptr[i] -
 							superblock->d_start_blk);
 		target->direct_ptr[i] = 0;
-
 	}
+
 	if (target->type == TYPE_REG) {
 		int *ptr_buffer;
 
@@ -783,7 +785,6 @@ static void release_data_blocks(struct inode *target)
 			}
 			unset_bitmap(block_map, target->indirect_ptr[i] -
 						superblock->d_start_blk);
-
 		}
 		free(ptr_buffer);
 	}
@@ -822,14 +823,13 @@ static int tfs_rmdir(const char *path)
 		goto out;
 	}
 
-	target_inode.valid = 0;
-
 	// Step 3: Clear data block bitmap of target directory
 	release_data_blocks(&target_inode);
 
 	// Step 4: Clear inode bitmap and its data block
 	unset_bitmap(inode_map, target_inode.ino);
 	bio_write(superblock->i_bitmap_blk, inode_map);
+	target_inode.valid = 0;
 	writei(target_inode.ino, &target_inode);
 
 	// Step 5: Call get_node_by_path() to get inode of parent directory
