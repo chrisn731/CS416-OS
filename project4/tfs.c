@@ -211,7 +211,7 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 {
 	struct inode dir_node;
 	struct dirent *entries;
-	int block_ptr, err = -ENOENT;
+	int block_ptr;
 
 	/*
 	 * Step 1: Call readi() to get the inode using ino
@@ -219,7 +219,7 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 	 */
 	if (readi(ino, &dir_node) < 0) {
 		tfs_log("%s: Error finding inode for ino (%d)", __func__, ino);
-		return err;
+		return -ENOENT;
 	}
 
 	entries = malloc(BLOCK_SIZE);
@@ -246,14 +246,13 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 			 */
 			if (entry_parser->valid && !strcmp(entry_parser->name, fname)) {
 				*dirent = *entry_parser;
-				err = 0;
-				goto out;
+				free(entries);
+				return 0;
 			}
 		}
 	}
-out:
 	free(entries);
-	return err;
+	return -ENOENT;
 }
 
 /*
