@@ -69,3 +69,26 @@ blocked, the queue goes to lower levels and runs those tasks.
 ```
 
 ## Project 3 - User Level Memory Management
+Malloc library that allocates memory in pages. Simulates memory allocation at the
+OS level.
+
+### Implementation
+Our memory allocation table uses a multi level page table in a simulated 32-bit system.
+Therefore:
+```
+32-bit addresses
+	# bits for offset in a page = log_2(PAGE_SIZE)
+	# bits for page table index = log_2(PAGE_SIZE) / sizeof(page_table_entry)
+	# bits for page directory index = 32 - (# page table bits) - (# offset bits)
+```
+With this setup when a user requests, for example 8192 bytes and 4096 byte pages, we
+allocate them two full pages and make two valid entries in the page table. Also, if we
+want to read or write to the pages we use:
+```
+put_value(virt_addr, value, size)
+get_value(virt_addr, buffer, size)
+```
+We use the above functions because since we return a virtual address to the user they
+cannot directly do \*ptr = 3, instead do `put_value(ptr, 3, sizeof(int))`.
+
+## Project 4 - Tiny File System using FUSE
