@@ -17,7 +17,6 @@
 #define MAX_INUM 1024
 #define MAX_DNUM 16384
 
-
 struct superblock {
 	uint32_t	magic_num;		/* magic number */
 	uint16_t	max_inum;		/* maximum inode number */
@@ -47,20 +46,21 @@ struct dirent {
 };
 
 
-/*
- * bitmap operations
- */
+/* bitmap operations */
 typedef unsigned char* bitmap_t;
 
-void set_bitmap(bitmap_t b, int i) {
+static inline void set_bitmap(bitmap_t b, int i)
+{
     b[i / 8] |= 1 << (i & 7);
 }
 
-void unset_bitmap(bitmap_t b, int i) {
+static inline void unset_bitmap(bitmap_t b, int i)
+{
     b[i / 8] &= ~(1 << (i & 7));
 }
 
-uint8_t get_bitmap(bitmap_t b, int i) {
+static inline uint8_t get_bitmap(bitmap_t b, int i)
+{
     return b[i / 8] & (1 << (i & 7)) ? 1 : 0;
 }
 
