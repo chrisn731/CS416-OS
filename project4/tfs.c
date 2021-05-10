@@ -6,7 +6,6 @@
  */
 
 #define FUSE_USE_VERSION 26
-
 #include <fuse.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -19,7 +18,6 @@
 #include <libgen.h>
 #include <limits.h>
 #include <stdarg.h>
-
 #include "block.h"
 #include "tfs.h"
 
@@ -72,16 +70,16 @@ static void tfs_log(const char *fmt, ...)
 {
 	va_list argp;
 	va_start(argp, fmt);
-	fprintf(stdout, "## [LOG] ");
+	fprintf(stdout, "---[ (tfs_log) ");
 	vfprintf(stdout, fmt, argp);
 	va_end(argp);
-	fputc('\n', stdout);
+	fprintf(stdout, " ]---\n");
 }
 
 /*
  * get_avail_ino - Gets available inode index, sets bitmap and returns index
  */
-int get_avail_ino(void)
+static int get_avail_ino(void)
 {
 	int inode_num;
 
@@ -106,7 +104,7 @@ int get_avail_ino(void)
 /*
  * get_avail_blkno - finds open data block, sets bitmap and returns index
  */
-int get_avail_blkno(void)
+static int get_avail_blkno(void)
 {
 	int block_num;
 
@@ -141,7 +139,7 @@ static inline int inumber_to_blk(uint16_t ino)
  * ino: the inode's index
  * inode: ptr to where to store the contents of the inode
  */
-int readi(uint16_t ino, struct inode *inode)
+static int readi(uint16_t ino, struct inode *inode)
 {
 	struct inode *block;
 	int inode_block_index, offset;
@@ -168,7 +166,7 @@ int readi(uint16_t ino, struct inode *inode)
  * ino:	the inodes index
  * inode: ptr to the inodes contents
  */
-int writei(uint16_t ino, struct inode *inode)
+static int writei(uint16_t ino, struct inode *inode)
 {
 	struct inode *block;
 	int inode_block_index, offset;
@@ -207,7 +205,7 @@ int writei(uint16_t ino, struct inode *inode)
  * dirent: ptr to memory that is updated with the contents of the file
  * 		if it is found.
  */
-int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *dirent)
+static int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *dirent)
 {
 	struct inode dir_node;
 	struct dirent *entries;
@@ -262,7 +260,7 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
  * fname: the name of the file
  * name_len: length of fname
  */
-int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len)
+static int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len)
 {
 	struct dirent de, *entries;
 	int block_ptr;
@@ -332,7 +330,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
  * fname: the name of the file to remove
  * name_len: the length of fname
  */
-int dir_remove(struct inode dir_inode, const char *fname, size_t name_len)
+static int dir_remove(struct inode dir_inode, const char *fname, size_t name_len)
 {
 	struct dirent *entries;
 	int block_ptr;
@@ -389,7 +387,7 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len)
  * Resolve the path name, walk through the path, and finally, find its inode.
  * Implemented using iterative approach.
  */
-int get_node_by_path(const char *path, uint16_t ino, struct inode *inode)
+static int get_node_by_path(const char *path, uint16_t ino, struct inode *inode)
 {
 	struct dirent de = {0};
 	char *path_dup, *path_walker, *to_free;
@@ -464,7 +462,7 @@ static void init_inode(struct inode *new, int open_inode, int type)
  * 3. Creates the root directory and it's first entries ("." and "..")
  * 4. Writes everything to disk
  */
-int tfs_mkfs(void)
+static int tfs_mkfs(void)
 {
 	struct inode *iroot;
 	struct stat *stat_root;
@@ -863,9 +861,6 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	time_t create_time;
 	int open_inode, err;
 
-	if (!path || !mode)
-		return -1;
-
 	basec = strdup(path);
 	dirc = strdup(path);
 	if (!basec || !dirc)
@@ -973,6 +968,8 @@ static int __tfs_read_get_block(int read_block_ptr, struct inode *inode)
 
 		ptr_to_indirect(&read_block_ptr, &iptr_index, inode);
 		ptr_buffer = malloc(BLOCK_SIZE);
+		if (!ptr_buffer)
+			return -ENOMEM;
 		bio_read(inode->indirect_ptr[read_block_ptr], ptr_buffer);
 		block_ptr = ptr_buffer[iptr_index];
 		free(ptr_buffer);
@@ -1004,15 +1001,15 @@ static int tfs_read(const char *path, char *buffer, size_t size,
 	if (!block_buffer)
 		return -ENOMEM;
 
+	/* Step 2: Based on size and offset, read its data blocks from disk */
 	bytes_to_end = file_node.vstat.st_size - offset;
-
-	// Step 2: Based on size and offset, read its data blocks from disk
 	for (bytes_read = 0; bytes_read < size && bytes_read < bytes_to_end;) {
 		int read_block, counter = 0, rblock_ptr = offset / BLOCK_SIZE;
 		char *reader = block_buffer + (offset % BLOCK_SIZE);
 
 		read_block = __tfs_read_get_block(rblock_ptr, &file_node);
-
+		if (read_block < 0)
+			break;
 		if (!bio_read(read_block, block_buffer))
 			break;
 
@@ -1122,6 +1119,8 @@ static int tfs_write(const char *path, const char *buffer, size_t size,
 		 */
 		write_block_ptr = i / BLOCK_SIZE;
 		write_block = __tfs_write_get_block(write_block_ptr, &file_inode);
+		if (write_block < 0)
+			break;
 		bio_read(write_block, write_buffer);
 
 		/*
