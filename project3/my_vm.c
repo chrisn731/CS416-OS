@@ -288,39 +288,18 @@ int page_map(pde_t *pgdir, void *va, void *pa)
 	return 0;
 }
 
-/* Returns the next avaiable (non-valid) entries for virtual bitmap */
-static int get_next_avail_entry(int num_entries)
+/* Returns the next avaiable (non-valid) entries from bitmap */
+static unsigned int get_next_avail_entry(int num_entries, unsigned char *bmap)
 {
 	unsigned int i, free_page = 0, available_pages = 0;
 
 	for (i = 0; i < total_pages; i++) {
-		if (!map_get_bit(virt_map, i)) {
+		if (!map_get_bit(bmap, i)) {
 			if (!free_page)
 				free_page = i;
 			available_pages++;
 			if (available_pages == num_entries)
 				return free_page;
-		} else {
-			free_page = 0;
-			available_pages = 0;
-		}
-	}
-	return 0;
-}
-
-
-/* Function that gets the next available physical page */
-void *get_next_avail(int num_pages)
-{
-	unsigned int i, free_page = 0, available_pages = 0;
-
-	for (i = 0; i < total_pages; i++) {
-		if (!map_get_bit(alloc_map, i)) {
-			if (!free_page)
-				free_page = i;
-			available_pages++;
-			if (available_pages == num_pages)
-				return (void *) free_page;
 		} else {
 			free_page = 0;
 			available_pages = 0;
@@ -365,7 +344,7 @@ void *a_malloc(unsigned int num_bytes)
 
 	pthread_mutex_lock(&map_lock);
 	/* Find continuous open entries */
-	open_entry = get_next_avail_entry(num_pages);
+	open_entry = get_next_avail_entry(num_pages, virt_map);
 	if (!open_entry)
 		goto err_unlock_map;
 
@@ -378,7 +357,7 @@ void *a_malloc(unsigned int num_bytes)
 	 * Find the first available page and set corresponding bit in the map
 	 * and map it in the table.
 	 */
-	first_page = (unsigned int) get_next_avail(1);
+	first_page = get_next_avail_entry(1, alloc_map);
 	if (!first_page)
 		goto err_unlock_map;
 	map_set_bit(alloc_map, first_page);
@@ -392,7 +371,7 @@ void *a_malloc(unsigned int num_bytes)
 
 		/* Set the physical page and virtual page maps, and map the page */
 		pthread_mutex_lock(&map_lock);
-		ppn = (unsigned int) get_next_avail(1);
+		ppn = get_next_avail_entry(1, alloc_map);
 		map_set_bit(alloc_map, ppn);
 		pthread_mutex_unlock(&map_lock);
 
@@ -416,7 +395,6 @@ static unsigned int virt_addr_to_index(void *va)
 
 	index = top_bits(virt_addr, page_dir_bits) << page_table_bits;
 	index += mid_bits(virt_addr, page_table_bits, off_bits);
-	//printf("Index of virtaddr: %lu from %p\n", index, va);
 	return index;
 }
 
