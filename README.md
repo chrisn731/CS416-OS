@@ -89,6 +89,40 @@ put_value(virt_addr, value, size)
 get_value(virt_addr, buffer, size)
 ```
 We use the above functions because since we return a virtual address to the user they
-cannot directly do \*ptr = 3, instead do `put_value(ptr, 3, sizeof(int))`.
+cannot directly do \*ptr = 3, instead we use `put_value()` to edit memory.
+
+### Example
+```
+int *ptr;
+int x = 3, y;
+
+ptr = a_malloc(sizeof(int));
+
+/* Put 3 into the location that ptr points to */
+put_value(ptr, &x, sizeof(int));
+
+/* If we get the value from the ptr and store it in y, y = 3 */
+get_value(ptr, &y, sizeof(int));
+```
 
 ## Project 4 - Tiny File System using FUSE
+Implemented a tiny file system using FUSE.
+
+### Mounting the file system
+To mount the filesystem, compile and run the filesystem on the desired mount point.
+```
+$ make
+$ ./tfs -s [mount point]
+```
+Once the filesystem is mounted, you can use it as if it was any other filesystem.
+Simple command line programs like `mkdir`, `touch`, `rmdir`, and more work as expected.
+Also, a file named `DISKFILE` will be created which contains all the contents of
+the filesystem.
+
+### Unmounting the filesystem
+To unmount the filesystem you can perform:
+```
+$ fusermount -u [mount point]
+```
+If you want to completely reset and clear the file system, simply delete
+`DISKFILE` that is created.
