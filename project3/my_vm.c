@@ -1,9 +1,9 @@
-#include "my_vm.h"
 #include <err.h>
 #include <math.h>
 #include <pthread.h>
 #include <string.h>
 #include <sys/mman.h>
+#include "my_vm.h"
 
 #define ADDR_BITS 32
 
@@ -52,26 +52,23 @@ static void free_phys_mem(void)
 	free(virt_map);
 }
 
-/* Function responsible for allocating and setting your physical memory */
-void set_physical_mem(void)
+/*
+ * Function responsible for allocating and setting your physical memory
+ * Allocate physical memory using mmap or malloc; this is the total size of
+ * your memory you are simulating
+ */
+static void set_physical_mem(void)
 {
 	unsigned long map_size;
 
-	/*
-	 * Allocate physical memory using mmap or malloc; this is the total size of
-	 * your memory you are simulating
-	 *
-	 * HINT: Also calculate the number of physical and virtual pages and allocate
-	 * virtual and physical bitmaps and initialize them
-	 */
 	phys_mem_size = MEMSIZE < MAX_MEMSIZE ? MEMSIZE : MAX_MEMSIZE;
 	phys_mem = mmap(NULL, phys_mem_size, PROT_READ | PROT_WRITE,
 			MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (phys_mem == MAP_FAILED)
 		err(-1, "%s: Error allocating %lu bytes for physical memory",
 				__func__, phys_mem_size);
-	page_dir = phys_mem;
 
+	page_dir = phys_mem;
 	off_bits = (unsigned int) log_2(PGSIZE);
 	page_table_bits = (unsigned int) log_2(PGSIZE / sizeof(pte_t));
 	page_dir_bits = ADDR_BITS - page_table_bits - off_bits;
@@ -92,21 +89,17 @@ void set_physical_mem(void)
 	total_pages = phys_mem_size / PGSIZE;
 
 	map_size = total_pages / 8;
-	alloc_map = malloc(map_size);
-	virt_map = malloc(map_size);
+	alloc_map = calloc(1, map_size);
+	virt_map = calloc(1, map_size);
 	if (!alloc_map || !virt_map)
 		err(-1, "%s: Error allocating %lu bytes for bitmap",
 				__func__, map_size);
-	memset(alloc_map, 0, map_size);
-	memset(virt_map, 0, map_size);
 
 	/* We use page 0 as our directory */
 	map_set_bit(alloc_map, 0);
-
 	/* We do not want a virtual address to be 0x000... (or NULL) */
 	map_set_bit(virt_map, 0);
 
-	/* Free our physical memory when our application finishes */
 	if (atexit(&free_phys_mem) != 0)
 		warn("%s: Setup of automatic freeing of memory failed. "
 			"Physical memory will not be freed at program exit.",
@@ -118,14 +111,13 @@ void set_physical_mem(void)
  * Part 2: Add a virtual to physical page translation to the TLB.
  * Feel free to extend the function arguments or return type.
  */
-int add_TLB(void *va, void *pa)
+static int add_TLB(void *va, void *pa)
 {
 	unsigned long i, tag;
 
 	/* Part 2 HINT: Add a virtual to physical page translation to the TLB */
 	tag = (unsigned long) va >> off_bits;
 	i = tag % TLB_ENTRIES;
-
 	tlb_store.entries[i].virt_addr = tag;
 	tlb_store.entries[i].page_number = (unsigned long) pa;
 	tlb_store.entries[i].valid = true;
@@ -139,7 +131,7 @@ static unsigned int tlb_lookups;
  * Part 2: Check TLB for a valid translation.
  * Returns the physical page address.
  */
-pte_t *check_TLB(void *va)
+static pte_t *check_TLB(void *va)
 {
 	unsigned long i, tag;
 
@@ -181,7 +173,7 @@ void print_TLB_missrate(void)
  * The function takes a virtual address and page directories starting address and
  * performs translation to return the physical address
  */
-pte_t *translate(pde_t *pgdir, void *va)
+static pte_t *translate(pde_t *pgdir, void *va)
 {
 	pte_t table_entry, *page_table;
 	pde_t dir_entry;
@@ -198,7 +190,6 @@ pte_t *translate(pde_t *pgdir, void *va)
 	dir_index = top_bits(virt_addr, page_dir_bits);
 	table_index = mid_bits(virt_addr, page_table_bits, off_bits);
 	offset = low_bits(virt_addr, off_bits);
-
 	page_num = (unsigned long) check_TLB(va);
 	if (page_num)
 		goto tlb_hit;
@@ -210,7 +201,6 @@ pte_t *translate(pde_t *pgdir, void *va)
 	dir_entry = pgdir[dir_index];
 	if (!dir_entry)
 		return NULL;
-
 	table_num = low_bits(dir_entry, phys_page_bits);
 
 	/* Go to the relevant page table, and retrieve the page table entry. */
@@ -218,7 +208,6 @@ pte_t *translate(pde_t *pgdir, void *va)
 	table_entry = page_table[table_index];
 	if (!table_entry)
 		return NULL;
-
 	page_num = low_bits(table_entry, phys_page_bits);
 
 	/*
@@ -250,16 +239,11 @@ static pde_t alloc_new_table(void)
  * directory to see if there is an existing mapping for a virtual address. If the
  * virtual address is not present, then a new entry will be added
  */
-int page_map(pde_t *pgdir, void *va, void *pa)
+static int page_map(pde_t *pgdir, void *va, void *pa)
 {
 	pte_t table_entry, *page_table;
 	pde_t dir_entry;
 	unsigned long dir_index, table_index, table_num, page_num, virt_addr;
-	/*
-	 * HINT: Similar to translate(), find the page directory (1st level)
-	 * and page table (2nd-level) indices. If no mapping exists, set the
-	 * virtual to physical mapping
-	 */
 
 	if (!pgdir || !va || !pa)
 		return -1;
@@ -280,10 +264,9 @@ int page_map(pde_t *pgdir, void *va, void *pa)
 	page_table = (pte_t *) ((char *) phys_mem + table_num * PGSIZE);
 	table_entry = page_table[table_index];
 	page_num = ((pte_t) pa - (pte_t) phys_mem) / PGSIZE;
-	if (table_entry != (pte_t) page_num) {
-		/* Only edit the entry if we it needs to be updated */
+	/* Update the table entry if the mapping is invalid */
+	if (table_entry != (pte_t) page_num)
 		page_table[table_index] = (pte_t) page_num;
-	}
 	add_TLB(va, (void *) page_num);
 	return 0;
 }
@@ -464,12 +447,6 @@ void put_value(void *va, void *val, int size)
 	int i;
 	char *phys_addr, *val_ptr = val, *virt_addr = va;
 
-	/*
-	 * HINT: Using the virtual address and translate(), find the physical page. Copy
-	 * the contents of "val" to a physical page. NOTE: The "size" value can be larger
-	 * than one page. Therefore, you may have to find multiple pages using translate()
-	 * function
-	 */
 	if (!va || !val || size <= 0)
 		return;
 
@@ -485,7 +462,7 @@ void put_value(void *va, void *val, int size)
 
 
 /*
- * Given a virtual address, this function copies the contents of the page
+ * Given a virtual address, this function copies (size) bytes from the page
  * to val
  */
 void get_value(void *va, void *val, int size)
@@ -493,10 +470,6 @@ void get_value(void *va, void *val, int size)
 	int i;
 	char *phys_addr, *val_ptr = val, *virt_addr = va;
 
-	/*
-	 * HINT: put the values pointed to by "va" inside the physical memory at given
-	 * "val" address. Assume you can access "val" directly by derefencing them
-	 */
 	if (!va || !val || size <= 0)
 		return;
 
@@ -519,13 +492,6 @@ void get_value(void *va, void *val, int size)
  */
 void mat_mult(void *mat1, void *mat2, int size, void *answer)
 {
-	/*
-	 * Hint: You will index as [i * size + j] where  "i, j" are the indices of the
-	 * matrix accessed. Similar to the code in test.c, you will use get_value() to
-	 * load each element and perform multiplication. Take a look at test.c! In addition to
-	 * getting the values from two matrices, you will perform multiplication and
-	 * store the result to the "answer array"
-	 */
 	int i, k, j, num1, num2, total;
 	unsigned int addr_mat1, addr_mat2, addr_ans;
 
